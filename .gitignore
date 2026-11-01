@@ -18,6 +18,7 @@ env/
 logs/
 *.log
 
+*.env
 *.h5
 *.pt
 *.pth
