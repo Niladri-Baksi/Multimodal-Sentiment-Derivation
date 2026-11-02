@@ -1,0 +1,16 @@
+# Model Architecture Configuration for Multimodal Sentiment Derivation
+# Canonical specifications for Stage 2 modality-specific feature encoders
+
+# Stage 2: Video Feature Encoder
+video_encoder:
+  architecture: "resnet18"           # Baseline visual backbone per AGENTS.md
+  pretrained: true                   # Load ImageNet pretrained weights
+  weights: "DEFAULT"                 # Canonical torchvision weight identifier
+  feature_dim: 512                   # Visual embedding dimension per frame (ResNet-18 pool5)
+  freeze_backbone: true              # Freeze weights during initial experiments per AGENTS.md
+  apply_transforms: false            # Set true to apply resizing & normalization inside encoder
+  image_size: [224, 224]             # Standard spatial input dimensions (height, width)
+  normalization:
+    mean: [0.485, 0.456, 0.406]      # ImageNet channel mean (RGB)
+    std: [0.229, 0.224, 0.225]       # ImageNet channel std (RGB)
+
