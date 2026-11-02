@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Jupyter Notebook
 .ipynb_checkpoints/
 
 # Virtual Environments
@@ -19,6 +21,13 @@ logs/
 *.log
 *.db
 *.sqlite3
+
+# Dataset and temporary directories
+dataset/
+datasets/
+ignore/
+others/
+scratch/
 
 # Large Model Checkpoints (keep GitHub lightweight)
 checkpoints/*.pth
