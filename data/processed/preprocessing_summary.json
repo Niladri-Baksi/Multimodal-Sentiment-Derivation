@@ -1,6 +1,6 @@
 {
-  "execution_timestamp": "2026-11-02 23:19:56",
-  "elapsed_seconds": 22.59,
+  "execution_timestamp": "2026-11-03 01:27:49",
+  "elapsed_seconds": 13.26,
   "total_samples": 1102,
   "split_counts": {
     "train": 432,
@@ -10,35 +10,85 @@
   "emotion_frequencies": {
     "Curiosity": {
       "count": 385,
-      "percentage": 34.94
+      "percentage": 34.94,
+      "pos_weight": 1.8623
     },
     "Uncertainty": {
       "count": 344,
-      "percentage": 31.22
+      "percentage": 31.22,
+      "pos_weight": 2.2035
     },
     "Excitement": {
       "count": 355,
-      "percentage": 32.21
+      "percentage": 32.21,
+      "pos_weight": 2.1042
     },
     "Happiness": {
       "count": 604,
-      "percentage": 54.81
+      "percentage": 54.81,
+      "pos_weight": 0.8245
     },
     "Surprise": {
       "count": 298,
-      "percentage": 27.04
+      "percentage": 27.04,
+      "pos_weight": 2.698
     },
     "Disgust": {
       "count": 137,
-      "percentage": 12.43
+      "percentage": 12.43,
+      "pos_weight": 7.0438
     },
     "Fear": {
       "count": 50,
-      "percentage": 4.54
+      "percentage": 4.54,
+      "pos_weight": 21.04
     },
     "Frustration": {
       "count": 131,
-      "percentage": 11.89
+      "percentage": 11.89,
+      "pos_weight": 7.4122
+    }
+  },
+  "train_split_emotion_stats": {
+    "Curiosity": {
+      "count": 148,
+      "percentage": 34.26,
+      "pos_weight": 1.9189
+    },
+    "Uncertainty": {
+      "count": 132,
+      "percentage": 30.56,
+      "pos_weight": 2.2727
+    },
+    "Excitement": {
+      "count": 144,
+      "percentage": 33.33,
+      "pos_weight": 2.0
+    },
+    "Happiness": {
+      "count": 224,
+      "percentage": 51.85,
+      "pos_weight": 0.9286
+    },
+    "Surprise": {
+      "count": 114,
+      "percentage": 26.39,
+      "pos_weight": 2.7895
+    },
+    "Disgust": {
+      "count": 60,
+      "percentage": 13.89,
+      "pos_weight": 6.2
+    },
+    "Fear": {
+      "count": 17,
+      "percentage": 3.94,
+      "pos_weight": 24.4118
+    },
+    "Frustration": {
+      "count": 53,
+      "percentage": 12.27,
+      "pos_weight": 7.1509
     }
   },
   "valence_statistics": {
@@ -57,6 +107,16 @@
     "6": 7,
     "7": 1,
     "8": 0
+  },
+  "video_profile": {
+    "resolutions": {
+      "1280x720": 1034,
+      "640x360": 68
+    },
+    "fps_distribution": {
+      "23.976": 947,
+      "29.97": 155
+    }
   },
   "modality_availability": {
     "video": 1102,

@@ -76,8 +76,18 @@ STAGE 10: EXPLAINABLE AI (XAI)
     - Columns 0–7: Discrete multi-label emotions (*Curiosity*, *Uncertainty*, *Excitement*, *Happiness*, *Surprise*, *Disgust*, *Fear*, *Frustration*).
     - Column 8: Continuous *Valence* rating ($[1.0, 7.0]$ Likert scale).
   - Confirmed 0 corrupted or missing video files across all splits.
+  - Profiled physical media: 1,034 clips at $1280 \times 720$, 68 clips at $640 \times 360$; 947 at $23.976$ FPS, 155 at $29.97$ FPS; durations range from $2.8$s to $14.3$s.
   - Documented that raw EmoReact V1.0 contains no dialogue/text transcripts; handled gracefully as an optional modality.
-  - Identified key class distributions: *Happiness* is the dominant class ($54.8\%$), while *Fear* is the severe minority class ($4.5\%$). Multi-label complexity shows $64.8\%$ of clips feature $\ge 2$ active emotions simultaneously.
+  - Identified severe class imbalance and calculated exact positive weight ratios (`pos_weight`) for multi-label `torch.nn.BCEWithLogitsLoss`:
+    - *Happiness*: $0.93$ (51.9% positive)
+    - *Curiosity*: $1.92$ (34.3% positive)
+    - *Excitement*: $2.00$ (33.3% positive)
+    - *Uncertainty*: $2.27$ (30.6% positive)
+    - *Surprise*: $2.79$ (26.4% positive)
+    - *Disgust*: $6.20$ (13.9% positive)
+    - *Frustration*: $7.15$ (12.3% positive)
+    - *Fear*: $24.41$ (3.9% positive)
+  - Multi-label complexity shows $64.8\%$ of clips feature $\ge 2$ active emotions simultaneously.
 
 - **Preprocessing Module (`src/sentiment_derivation/data/preprocessing.py`)**:
   - Implemented modular, beginner-friendly functions with strict type hinting and docstrings.
@@ -89,15 +99,15 @@ STAGE 10: EXPLAINABLE AI (XAI)
   - `extract_sample_frames()`: Uniformly samples $T$ RGB frames from video clips.
   - `verify_visual_features()`: Confirms presence of OpenFace 1.0 feature triplets (`.params.txt`, `_au.txt`, `_gaze.txt`).
   - `build_standardized_sample()`: Produces sample dictionaries adhering to architectural contracts.
-  - `build_processed_manifest()` & `compute_manifest_statistics()`: End-to-end dataset processing and statistical aggregation.
+  - `build_processed_manifest()` & `compute_manifest_statistics()`: End-to-end dataset processing and statistical aggregation with `pos_weight` ratios and video profiling.
   - `save_manifest()` / `load_manifest()`: Manifest JSON serialization and parsing.
 
 - **Configuration & Execution Script**:
-  - `configs/data.yaml`: Authoritative configuration for dataset paths, splits, label ordering, and preprocessing flags.
+  - `configs/data.yaml`: Authoritative configuration for dataset paths, candidate root resolution (Colab/Local), splits, label ordering, and preprocessing flags.
   - `scripts/prepare_data.py`: CLI entry point generating `data/processed/processed_manifest.json` and `preprocessing_summary.json`.
 
 - **Exploration Notebook**:
-  - `notebooks/01_dataset_exploration.ipynb`: Beginner-friendly, executable 20-cell notebook covering environment setup, directory trees, annotation parsing, label distributions, video metadata inspection, audio waveforms, text availability verification, and data integrity checks.
+  - `notebooks/01_dataset_exploration.ipynb`: Executable 21-cell notebook covering Colab/Local environment detection, GPU verification, directory trees, annotation parsing, label distributions with `pos_weight` ratios, emotion-valence correlation heatmap, audio waveform & 64-channel Log-Mel Spectrogram, video metadata profiling, and OpenFace features.
 
 - **Automated Test Suite**:
   - `tests/test_data.py`: 12 comprehensive unit and integration tests covering annotation parsing, schema validation, non-binary error handling, media inspection, manifest construction, and real dataset integrity (100% passing).
@@ -205,7 +215,7 @@ python scripts/prepare_data.py
 ### 3. Run Automated Tests
 Execute the unit and integration test suite:
 ```powershell
-pytest tests/test_data.py -v
+python -m pytest tests/test_data.py -v
 ```
 
 ### 4. Run Exploration Notebooks
@@ -223,4 +233,3 @@ jupyter notebook notebooks/02_video_experiments.ipynb
 - **Temporal Order Preservation**: Visual frame sequences preserve temporal order $T$ throughout the video encoder to provide dynamic sequence inputs to the Stage 4 BiLSTM.
 - **CPU & GPU Compatibility**: All modules operate on both CPU and CUDA-enabled devices.
 - **Modular Isolation**: Each component adheres strictly to defined interface contracts and type hints without cross-module side effects.
-

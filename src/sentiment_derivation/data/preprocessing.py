@@ -661,6 +661,40 @@ def compute_manifest_statistics(
             if val:
                 modality_counts[mod] = modality_counts.get(mod, 0) + 1
 
+    # Video profile statistics (resolutions & FPS)
+    resolutions: Dict[str, int] = {}
+    fps_counts: Dict[str, int] = {}
+    for s in all_samples:
+        meta = s.get("metadata", {})
+        w = meta.get("width", 0)
+        h = meta.get("height", 0)
+        if w > 0 and h > 0:
+            res_str = f"{w}x{h}"
+            resolutions[res_str] = resolutions.get(res_str, 0) + 1
+        fps_val = meta.get("fps")
+        if fps_val is not None and fps_val > 0:
+            fps_str = str(round(fps_val, 3))
+            fps_counts[fps_str] = fps_counts.get(fps_str, 0) + 1
+
+    # Train split specific emotion distribution and BCE pos_weight ratios
+    train_samples = manifest_samples.get("train", [])
+    train_total = len(train_samples)
+    train_emotion_counts: Dict[str, int] = {e: 0 for e in emotion_names}
+    for s in train_samples:
+        labels = s.get("emotion_labels", {})
+        for e in emotion_names:
+            if labels.get(e, 0) == 1:
+                train_emotion_counts[e] += 1
+
+    train_emotion_stats: Dict[str, Dict[str, Any]] = {}
+    for e in emotion_names:
+        c = train_emotion_counts[e]
+        train_emotion_stats[e] = {
+            "count": c,
+            "percentage": round(c / train_total * 100, 2) if train_total > 0 else 0.0,
+            "pos_weight": round((train_total - c) / max(c, 1), 4) if train_total > 0 else 1.0,
+        }
+
     return {
         "total_samples": total_samples,
         "split_counts": split_counts,
@@ -668,9 +702,11 @@ def compute_manifest_statistics(
             e: {
                 "count": count,
                 "percentage": round(count / total_samples * 100, 2),
+                "pos_weight": round((total_samples - count) / max(count, 1), 4),
             }
             for e, count in emotion_counts.items()
         },
+        "train_split_emotion_stats": train_emotion_stats,
         "valence_statistics": {
             "min": round(min_valence, 4),
             "max": round(max_valence, 4),
@@ -679,6 +715,10 @@ def compute_manifest_statistics(
         },
         "active_emotions_histogram": co_occurrence,
         "modality_availability": modality_counts,
+        "video_profile": {
+            "resolutions": resolutions,
+            "fps_distribution": fps_counts,
+        },
     }
 
 

@@ -210,6 +210,9 @@ def test_build_processed_manifest_mock(temp_workspace: Path):
     assert manifest["statistics"]["total_samples"] == 2
     assert manifest["statistics"]["emotion_frequencies"]["Happiness"]["count"] == 1
     assert manifest["statistics"]["emotion_frequencies"]["Curiosity"]["count"] == 1
+    assert "pos_weight" in manifest["statistics"]["emotion_frequencies"]["Happiness"]
+    assert "train_split_emotion_stats" in manifest["statistics"]
+    assert "video_profile" in manifest["statistics"]
 
 
 def test_save_and_load_manifest(temp_workspace: Path):

@@ -53,10 +53,10 @@ Multimodal-Sentiment-Derivation/
 
 | Modality | Status in Raw Dataset | Format / Encoding | Characteristics |
 | :--- | :--- | :--- | :--- |
-| **Video** | Present | H.264 / MP4 | 1280x720 (720p HD), ~23.976 FPS, durations 2.8s - 14.3s |
-| **Audio** | Present (in MP4) | AAC Stereo | 44.1 kHz, 2 channels; extracted to 16 kHz mono WAV |
-| **Visual Features** | Present | Plain text / CSV | OpenFace 1.0 (`.params.txt`, `_au.txt`, `_gaze.txt`) |
-| **Text** | Not Present | None | EmoReact V1.0 does not include speech transcripts |
+| **Video** | Present | H.264 / MP4 | 1,034 clips at 1280x720, 68 at 640x360; 947 at 23.976 FPS, 155 at 29.97 FPS; durations 2.8s - 14.3s. Resized to $224 \times 224$ for ResNet-18. |
+| **Audio** | Present (in MP4) | AAC Stereo | 44.1 kHz, 2 channels; standardized to 16 kHz mono 16-bit PCM WAV; 64-band Log-Mel Spectrogram input contract. |
+| **Visual Features** | Present | Plain text / CSV | OpenFace 1.0 (`.params.txt`, `_au.txt`, `_gaze.txt`) per clip. |
+| **Text** | Not Present | None | EmoReact V1.0 does not include speech transcripts; handled as optional/None with attention masking. |
 
 > [!NOTE]
 > Following `AGENTS.md` Stage 1 specifications, textual inputs are optional. The standardized manifest records `text: null` and `modality_availability.text: false` without failing or discarding samples. If textual features are enabled in later stages, automatic speech recognition (ASR via Whisper) can be applied.
@@ -85,10 +85,23 @@ Each row in `Labels/*_labels.text` consists of **9 comma-separated numerical val
 > [!IMPORTANT]
 > **No Fabricated Sentiment**: Emotion labels (e.g. *Happiness*, *Fear*) and affective state (*Valence*) are preserved in their exact original form. No artificial binary/ternary "sentiment" labels (positive/negative/neutral) are fabricated during preprocessing. Sentiment derivation is exclusively learned in downstream architecture stages.
 
-### Multi-Label Statistics
+### Multi-Label Imbalance & Training Loss Weights
+
+To address severe class imbalance during multi-label classification, positive weights ($\text{Pos\_Weight}_e = \frac{N_{\text{neg}}}{N_{\text{pos}}}$) are computed for `torch.nn.BCEWithLogitsLoss`:
+
+| Emotion Category | Train Positives ($N=432$) | Train Prevalence (%) | BCE `Pos_Weight` Ratio |
+| :--- | :--- | :--- | :--- |
+| **Happiness** | 224 | 51.85% | 0.9286 |
+| **Curiosity** | 148 | 34.26% | 1.9189 |
+| **Excitement** | 144 | 33.33% | 2.0000 |
+| **Uncertainty** | 132 | 30.56% | 2.2727 |
+| **Surprise** | 114 | 26.39% | 2.7895 |
+| **Disgust** | 60 | 13.89% | 6.2000 |
+| **Frustration** | 53 | 12.27% | 7.1509 |
+| **Fear** | 17 | 3.94% | 24.4118 |
+
 - **64.8%** of samples contain 2 or more co-occurring active emotions.
 - **12.5%** of samples have 0 active emotion labels (pure affective valence rating).
-- Multi-label loss formulations (such as weighted BCE or Asymmetric Loss) must be used during model training.
 
 ---
 
@@ -183,6 +196,5 @@ python scripts/prepare_data.py --extract-audio
 
 ### Step 4: Run Automated Tests
 ```powershell
-pytest tests/test_data.py
+python -m pytest tests/test_data.py -v
 ```
-
