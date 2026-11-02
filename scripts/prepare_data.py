@@ -94,27 +94,39 @@ def main() -> None:
     logger.info("Starting Phase 1 Preprocessing Pipeline")
     logger.info("=" * 60)
 
-    # 1. Locate dataset directories
+    # 1. Locate dataset directories (resolving candidates for Colab / Local compatibility)
     dataset_cfg = cfg.get("dataset", {})
-    root_dir = PROJECT_ROOT / dataset_cfg.get("root_dir", "datasets/EmoReact_V_1.0")
+    raw_root_setting = dataset_cfg.get("root_dir", "datasets/EmoReact_V_1.0")
+    root_dir = Path(raw_root_setting) if Path(raw_root_setting).is_absolute() else PROJECT_ROOT / raw_root_setting
 
     if not root_dir.is_dir():
-        logger.error(f"Dataset root directory not found: {root_dir}")
+        candidates = dataset_cfg.get("root_dir_candidates", [])
+        for cand in candidates:
+            cand_p = Path(cand) if Path(cand).is_absolute() else PROJECT_ROOT / cand
+            if cand_p.is_dir():
+                root_dir = cand_p
+                break
+
+    if not root_dir.is_dir():
+        logger.error(f"Dataset root directory not found at: {root_dir}")
         sys.exit(1)
     logger.info(f"Dataset root directory verified: {root_dir}")
 
-    # Build paths relative to project root
+    # Build split paths relative to resolved dataset root
     ann_files = {
-        split: str(PROJECT_ROOT / path)
-        for split, path in dataset_cfg.get("annotation_files", {}).items()
+        "train": str(root_dir / "Labels" / "train_labels.text"),
+        "val": str(root_dir / "Labels" / "val_labels.text"),
+        "test": str(root_dir / "Labels" / "test_labels.text"),
     }
     video_dirs = {
-        split: str(PROJECT_ROOT / path)
-        for split, path in dataset_cfg.get("video_dirs", {}).items()
+        "train": str(root_dir / "Data" / "Train"),
+        "val": str(root_dir / "Data" / "Validation"),
+        "test": str(root_dir / "Data" / "Test"),
     }
     feat_dirs = {
-        split: str(PROJECT_ROOT / path)
-        for split, path in dataset_cfg.get("visual_feature_dirs", {}).items()
+        "train": str(root_dir / "Visual_features" / "Train_feat"),
+        "val": str(root_dir / "Visual_features" / "Val_feat"),
+        "test": str(root_dir / "Visual_features" / "Test_feat"),
     }
 
     # 2. Configure output paths
@@ -166,8 +178,10 @@ def main() -> None:
         "total_samples": stats.get("total_samples", 0),
         "split_counts": stats.get("split_counts", {}),
         "emotion_frequencies": stats.get("emotion_frequencies", {}),
+        "train_split_emotion_stats": stats.get("train_split_emotion_stats", {}),
         "valence_statistics": stats.get("valence_statistics", {}),
         "active_emotions_histogram": stats.get("active_emotions_histogram", {}),
+        "video_profile": stats.get("video_profile", {}),
         "modality_availability": stats.get("modality_availability", {}),
         "corrupted_or_missing_count": len(issues),
         "issues": issues,
@@ -192,4 +206,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
