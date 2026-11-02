@@ -42,112 +42,114 @@ Do not claim novelty or superiority without experimental evidence.
 All AI coding assistants and contributors MUST follow this architecture.
 The following represents the authoritative development pipeline.
 
+````text
 STAGE 1: MULTIMODAL INPUT
 │
 ├── Video Input
 ├── Audio Input
 └── Text Input (Optional)
-│
-▼
+        │
+        ▼
 STAGE 2: MODALITY-SPECIFIC FEATURE EXTRACTION
-│
-├── Video Encoder
-├── Audio Encoder
-└── Text Encoder
-│
-▼
+        │
+        ├── Video Encoder
+        ├── Audio Encoder
+        └── Text Encoder
+                │
+                ▼
 STAGE 3: MULTIMODAL FUSION
-│
-└── Multimodal Fusion + Attention
-│
-▼
+        │
+        └── Multimodal Fusion + Attention
+                │
+                ▼
 STAGE 4: TEMPORAL ENCODING
-│
-└── Temporal Encoder (BiLSTM)
-│
-▼
-PARALLEL REPRESENTATION
-│
-┌───────┴────────┐
-▼ ▼
-EMOTION BRANCH CONTEXT BRANCH
-│ │
-▼ │
-Multi-label Emotion │
-Head │
-│ │
-▼ │
-Emotion Probabilities │
-│ │
-▼ │
-Emotion-wise │
-Confidence Estimation │
-│ │
-└────────┬───────┘
-│
-▼
+        │
+        └── Temporal Encoder (BiLSTM)
+                │
+                ▼
+        PARALLEL REPRESENTATION
+                │
+        ┌───────┴────────┐
+        ▼                ▼
+   EMOTION BRANCH   CONTEXT BRANCH
+        │                │
+        ▼                │
+ Multi-label Emotion     │
+      Head               │
+        │                │
+        ▼                │
+ Emotion Probabilities   │
+        │                │
+        ▼                │
+ Emotion-wise            │
+ Confidence Estimation   │
+        │                │
+        └────────┬───────┘
+                 │
+                 ▼
 STAGE 5: TEMPORAL EMOTION TRANSITION ANALYSIS
-│
-├── Emotion Evolution
-├── Emotion Persistence
-└── Temporal Attention
-│
-▼
+        │
+        ├── Emotion Evolution
+        ├── Emotion Persistence
+        └── Temporal Attention
+                 │
+                 ▼
 STAGE 6: TRANSITION REPRESENTATION
-│
-├── Emotion Representation
-├── Affective State Representation
-└── Confidence Representation
-│
-▼
-TEMPORAL / TRANSITION
-REPRESENTATION
-│
-▼
+        │
+        ├── Emotion Representation
+        ├── Affective State Representation
+        └── Confidence Representation
+                 │
+                 ▼
+        TEMPORAL / TRANSITION
+             REPRESENTATION
+                 │
+                 ▼
 STAGE 7: UNCERTAINTY-AWARE GATING
-│
-└── Evaluate reliability and contribution
-of cumulative emotional states across
-temporal segments.
-│
-▼
+        │
+        └── Evaluate reliability and contribution
+            of cumulative emotional states across
+            temporal segments.
+                 │
+                 ▼
 STAGE 8: LATENT SENTIMENT MAPPING
-│
-├── Current Emotional State
-├── Emotion-wise Confidence
-├── Temporal Changes
-└── Emotion Persistence
-│
-▼
-LATENT AFFECTIVE REPRESENTATION
-(Evolution across t1, t2, t3 ... tn)
-│
-▼
+        │
+        ├── Current Emotional State
+        ├── Emotion-wise Confidence
+        ├── Temporal Changes
+        └── Emotion Persistence
+                 │
+                 ▼
+        LATENT AFFECTIVE REPRESENTATION
+        (Evolution across t1, t2, t3 ... tn)
+                 │
+                 ▼
 STAGE 9: SENTIMENT DERIVATION AND MAPPING
-│
-├── Final Sentiment
-└── Sentiment Confidence
-│
-▼
+        │
+        ├── Final Sentiment
+        └── Sentiment Confidence
+                 │
+                 ▼
 STAGE 10: EXPLAINABLE AI (XAI)
-│
-├── Modality-wise Contribution
-├── Emotion-wise Contribution
-├── Affective State Explanation
-├── Temporal Transition Explanation
-├── Confidence and Uncertainty Explanation
-├── Uncertainty-Gating Explanation
-└── Latent Sentiment Mapping Explanation
-│
-▼
-FINAL EXPLAINABLE OUTPUT
-│
-├── Derived Sentiment
-├── Prediction Confidence
-├── Key Contributing Emotions
-├── Important Temporal Changes
-├── Modality Contributions
-└── Human-Readable Explanation
+        │
+        ├── Modality-wise Contribution
+        ├── Emotion-wise Contribution
+        ├── Affective State Explanation
+        ├── Temporal Transition Explanation
+        ├── Confidence and Uncertainty Explanation
+        ├── Uncertainty-Gating Explanation
+        └── Latent Sentiment Mapping Explanation
+                 │
+                 ▼
+        FINAL EXPLAINABLE OUTPUT
+        │
+        ├── Derived Sentiment
+        ├── Prediction Confidence
+        ├── Key Contributing Emotions
+        ├── Important Temporal Changes
+        ├── Modality Contributions
+        └── Human-Readable Explanation
+```
 
 IMPORTANT:
 
@@ -448,7 +450,7 @@ multimodal-sentiment-derivation/
 └── checkpoints/
     └── README.md
 
-```
+````
 
 This structure is the intended organization, not a requirement to create empty files immediately.
 

@@ -3,6 +3,7 @@ datasets/
 ignore/
 models/
 data/
+others/
 
 __pycache__/
 *.pyc
