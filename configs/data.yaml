@@ -1,0 +1,78 @@
+# ==============================================================================
+# DATA CONFIGURATION: EmoReact Multimodal Sentiment Derivation System
+# Reference: AGENTS.md | Canonical Architecture
+# ==============================================================================
+
+dataset:
+  name: "EmoReact_V_1.0"
+  total_clips: 1102
+  split_type: "person_independent"
+  
+  # Paths (configurable for local machine or Google Colab)
+  paths:
+    colab_raw_dir: "/content/data/EmoReact_V_1.0"
+    local_raw_dir: "data/raw/EmoReact_V_1.0"
+    processed_dir: "data/processed"
+    features_dir: "data/features"
+    checkpoints_dir: "checkpoints"
+
+  # Predefined split sample counts (verified)
+  splits:
+    train:
+      count: 432
+      video_dir: "Data/Train"
+      label_file: "Labels/train_labels.text"
+    val:
+      count: 303
+      video_dir: "Data/Validation"
+      label_file: "Labels/val_labels.text"
+    test:
+      count: 367
+      video_dir: "Data/Test"
+      label_file: "Labels/test_labels.text"
+
+# Annotation Schema
+annotations:
+  # 8 Multi-label affective states (binary 0/1, independent Sigmoids)
+  emotions:
+    - "Curiosity"
+    - "Uncertainty"
+    - "Excitement"
+    - "Happiness"
+    - "Surprise"
+    - "Disgust"
+    - "Fear"
+    - "Frustration"
+  num_emotions: 8
+
+  # Column 9: Continuous Valence rating (approx 1.0 - 7.0)
+  valence:
+    column_name: "Valence"
+    min_val: 1.0
+    max_val: 7.0
+    neutral_band: [3.8, 4.2]
+
+# Audio Modality Configuration (Assigned Scope)
+audio:
+  sample_rate: 16000          # Standard 16 kHz mono
+  channels: 1                 # Mono channel
+  n_mels: 64                  # 64 Mel filter bands
+  n_fft: 400                  # 25 ms window length at 16 kHz
+  hop_length: 160             # 10 ms hop length at 16 kHz
+  max_duration_sec: 5.0       # Max audio duration (clips typically 2-5s)
+  target_temporal_steps: 16   # T=16 time steps aligned with fusion
+  feature_dim: 128            # D_audio output dimension
+
+# Video Modality Configuration (Teammate Scope)
+video:
+  num_sampled_frames: 16      # T=16 uniform temporal sampling
+  frame_size: [224, 224]      # Input size for ResNet-18
+  backbone: "resnet18"
+  feature_dim: 512            # D_video output dimension
+  pretrained: true
+  frozen: true
+
+# Multimodal Fusion Configuration
+fusion:
+  target_temporal_steps: 16   # T = 16
+  fused_dim: 256              # Common projection dimension
