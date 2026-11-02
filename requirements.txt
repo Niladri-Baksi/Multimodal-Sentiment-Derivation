@@ -1,0 +1,22 @@
+# Phase 1: Dataset Exploration & Preprocessing Dependencies
+# Multimodal Emotion-to-Sentiment Derivation
+
+# Numerical computation & data structures
+numpy>=1.23.0
+pandas>=2.0.0
+
+# Scientific computing & signal/audio handling
+scipy>=1.10.0
+
+# Data visualization for exploration notebook
+matplotlib>=3.7.0
+
+# Configuration management (YAML parsing)
+pyyaml>=6.0
+
+# Computer vision for video frame inspection and processing
+opencv-python>=4.8.0
+
+# Unit and integration testing
+pytest>=7.4.0
+
