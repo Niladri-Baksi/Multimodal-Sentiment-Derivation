@@ -1,29 +1,43 @@
-dataset/
-datasets/
-ignore/
-models/
-data/
-
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-
-venv/
-env/
-
+*.py[cod]
+*$py.class
 .ipynb_checkpoints/
 
-.kaggle/
-.env
+# Virtual Environments
+venv/
+env/
+ENV/
 
+# Sensitive Information & Credentials
+.env
+*.env
+.kaggle/
+
+# Logs & Databases
 logs/
 *.log
-
-*.env
-*.h5
-*.pt
-*.pth
-*.csv
-*.xls
-*.xlsx
-
 *.db
+*.sqlite3
+
+# Large Model Checkpoints (keep GitHub lightweight)
+checkpoints/*.pth
+checkpoints/*.bin
+models/
+*.h5
+
+# Raw Dataset & Large Media (Must NOT be pushed to GitHub)
+data/raw/
+*.mp4
+*.avi
+*.wav
+*.rar
+*.zip
+
+# Allow tracking processed data and cached lightweight features
+!data/processed/
+!data/features/
+!data/splits/
+!data/README.md
+!data/processed/*.csv
+!data/features/*.pt
