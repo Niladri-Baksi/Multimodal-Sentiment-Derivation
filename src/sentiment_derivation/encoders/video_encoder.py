@@ -126,6 +126,12 @@ class VideoEncoder(nn.Module):
                         param.requires_grad = True
                     logger.info(f"Unfrozen backbone sub-module: {name}")
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.backbone.eval()
+        return self
+
     def forward(
         self,
         frames: torch.Tensor,
