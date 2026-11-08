@@ -31,3 +31,23 @@ multimodal_fusion:
   num_heads: 4
   hidden_dim: 256
   dropout: 0.1
+
+# Stage 4 / Phase 5: Parallel Representation & Emotion Branch
+emotion_classifier:
+  input_dim: 128                     # Input feature dimension from Multimodal Fusion
+  emotion_dim: 128                   # Intermediate Emotion Branch representation dimension
+  context_dim: 128                   # Distinct parallel Context Branch representation dimension
+  num_emotions: 8                    # Multi-label discrete emotion count (EmoReact)
+  dropout: 0.1                       # Regularization dropout
+  temperature: 1.0                   # Logit calibration temperature
+  confidence_method: "margin"        # Metric: "margin" (|2p - 1|) or "entropy" (1 - H(p))
+
+# Stage 4 / Phase 5: Continuous Affective State Head
+affective_state:
+  input_dim: 128                     # Input feature dimension from Multimodal Fusion
+  hidden_dim: 128                    # Intermediate projection dimension
+  affective_dim: 64                  # Dense affective state embedding dimension
+  min_valence: 1.0                   # EmoReact continuous valence scale minimum
+  max_valence: 7.0                   # EmoReact continuous valence scale maximum
+  dropout: 0.1                       # Regularization dropout
+  bounded: true                      # Scale output strictly to [min_valence, max_valence]
