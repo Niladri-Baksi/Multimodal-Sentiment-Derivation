@@ -170,7 +170,28 @@ Each entry in `processed_manifest.json` conforms to the architectural contract:
 
 ---
 
-## 7. How to Run
+## 7. Downstream Architecture Integration & Sentiment Derivation
+
+The preprocessed data manifest (`processed_manifest.json`) directly serves all downstream modeling stages:
+
+1. **Modality Encoders (Stage 2)**:
+   - Video clips $\to$ uniform 16-frame sequences processed by `VideoEncoder` ($512$-dim per frame).
+   - Audio tracks $\to$ 64-band Log-Mel spectrograms processed by `AudioEncoder` ($128$-dim per step).
+   - Text inputs $\to$ optional DistilBERT contextual tokens.
+2. **Multi-Label Emotion Supervision (Stage 4)**:
+   - The 8 binary indicators are supervised using `torch.nn.BCEWithLogitsLoss` parameterized with the precomputed `pos_weight` ratios (e.g., $24.41$ for Fear, $0.93$ for Happiness).
+3. **Continuous Valence Supervision (Stage 4)**:
+   - Supervised using continuous MSE loss on bounded $[1.0, 7.0]$ predictions from `AffectiveStateEstimator`.
+4. **Derived Sentiment Ground Truth (Stage 9)**:
+   - Ground truth sentiment labels for validation and evaluation are derived from continuous valence via `valence_to_sentiment_label(valence, neutral_margin=0.25)`:
+     - **Negative**: $\text{valence} < 3.75$
+     - **Neutral**: $3.75 \le \text{valence} \le 4.25$
+     - **Positive**: $\text{valence} > 4.25$
+     - **Continuous Polarity**: $s = (\text{valence} - 4.0) / 3.0 \in [-1.0, 1.0]$
+
+---
+
+## 8. How to Run
 
 ### Step 1: Activate Virtual Environment
 ```powershell
