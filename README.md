@@ -1,141 +1,164 @@
 # Multidimensional Emotion-to-Sentiment Derivation and Mapping
 
-A research-driven, multimodal, uncertainty-aware framework for deriving robust sentiment representations from multidimensional emotional dynamics across video and audio stimuli.
+A research-driven, multimodal, uncertainty-aware deep learning framework for deriving interpretable sentiment representations from multidimensional emotional dynamics across video, audio, and text.
 
 ---
 
 ## 1. Project Overview & Research Objectives
 
-Conventional sentiment analysis typically relies on direct surface-level classification or simple heuristics mapping categorical emotions directly to sentiment polarities. In contrast, this project models the complete causal and temporal relationship between:
+Conventional sentiment analysis typically relies on direct black-box classification or naive static mappings from categorical emotions to polarity labels. In contrast, this project investigates how sentiment can be systematically derived through a sequence of affective, temporal, and uncertainty-aware stages:
 
-1. **Affective State** (continuous valence dynamics)
-2. **Multi-label Emotion Distributions** (co-occurring discrete affective expressions)
-3. **Emotion-wise Prediction Confidence**
-4. **Predictive Uncertainty Estimation**
-5. **Temporal Dynamics and Emotional Transitions**
-6. **Latent Sentiment Representation**
-7. **Final Sentiment Derivation and its Confidence**
-8. **Explainable AI (XAI)**
+1. **Affective State**: Continuous valence ratings ($[1.0, 7.0]$ Likert scale).
+2. **Multi-Label Emotion Distributions**: Co-occurring discrete emotional expressions across 8 categories.
+3. **Emotion-Wise Prediction Confidence**: Independent reliability estimates maintained separately per emotion category.
+4. **Predictive Uncertainty & Calibration**: Epistemic variance, aleatoric entropy, and temperature-calibrated probability distributions.
+5. **Temporal Dynamics and Emotional Transitions**: Frame-to-frame velocity ($\Delta E_t$), emotional persistence (EMA), and temporal inflection saliency.
+6. **Uncertainty-Aware Gating**: Dynamic neural filtering modulating context representations based on predictive certainty.
+7. **Latent Sentiment Mapping**: Multi-stream synthesis producing an evolving latent affective representation across time.
+8. **Final Sentiment Derivation & Confidence**: 3-class categorical polarity (`Negative`, `Neutral`, `Positive`), continuous sentiment score ($-1.0$ to $1.0$), and sentiment-level confidence.
+9. **Explainable AI (XAI)**: Upstream representations preserved for faithful modality, temporal, and emotional attribution.
 
-The system is developed on top of the **EmoReact (V1.0)** benchmark, which captures multimodal reactions of children to diverse stimuli.
+The system is developed on the **EmoReact (V1.0)** benchmark, capturing natural multimodal emotional reactions of children to diverse stimuli.
 
 ---
 
 ## 2. Canonical System Architecture
 
-All development strictly follows the 10-stage sequential architecture defined in [`AGENTS.md`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/AGENTS.md):
+All development strictly adheres to the 10-stage sequential architecture specified in [`AGENTS.md`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/AGENTS.md):
 
 ```text
 STAGE 1: MULTIMODAL INPUT
-│   ├── Video Input
-│   ├── Audio Input
+│   ├── Video Input (MP4, Uniform 16 Frames)
+│   ├── Audio Input (Standardized 16 kHz Mono WAV)
 │   └── Text Input (Optional)
 ▼
-STAGE 2: MODALITY-SPECIFIC FEATURE EXTRACTION
-│   ├── Video Encoder (ResNet-18)
-│   ├── Audio Encoder (Log-Mel CNN / Pretrained baseline)
-│   └── Text Encoder (Optional)
+STAGE 2: MODALITY-SPECIFIC FEATURE ENCODING
+│   ├── Video Encoder (Pretrained ResNet-18 -> [B, T=16, 512])
+│   ├── Audio Encoder (Log-Mel Spectrogram 2D-CNN -> [B, T=16, 128])
+│   └── Text Encoder (DistilBERT + Adaptive Pooling -> [B, T=16, 128])
 ▼
 STAGE 3: MULTIMODAL FUSION
-│   └── Feature Alignment & Cross-Modal Attention
+│   ├── Modality Aligner (Sequence-position linear resampling -> [B, T=16, 128])
+│   └── Cross-Modal Attention Fusion (Learned query attention -> [B, T=16, 128])
 ▼
 STAGE 4: TEMPORAL ENCODING
-│   └── BiLSTM Temporal Encoder
+│   └── BiLSTM Temporal Encoder (Bidirectional LSTM + Residual -> [B, T=16, 128])
 ▼
 PARALLEL REPRESENTATION
-┌───────┴────────┐
-▼                ▼
-EMOTION BRANCH   CONTEXT BRANCH
-│ (Multi-label   │
-│  Probabilities │
-│  & Confidence) │
-└───────┬────────┘
-        ▼
+┌──────────────────────────┴──────────────────────────┐
+▼                                                     ▼
+EMOTION BRANCH                                        CONTEXT BRANCH
+├── Multi-Label Emotion Head ([B, T, 8])              └── Parallel Context
+├── Continuous Affective State Head ([B, T, 64])          Embeddings ([B, T, 128])
+└── Independent Confidence Estimation ([B, T, 8])
+└──────────────────────────┬──────────────────────────┘
+                           ▼
 STAGE 5: TEMPORAL EMOTION TRANSITION ANALYSIS
+│   ├── Delta Emotion Velocity: ΔE_t = E_t - E_{t-1}
+│   ├── Emotion Persistence EMA: P_t = α P_{t-1} + (1 - α) E_t
+│   └── Temporal Attention Saliency: α_t in [0.0, 1.0]
 ▼
 STAGE 6: TRANSITION REPRESENTATION
+│   └── Composite Transition Embedding (Emotion + Affect + Confidence -> [B, T, 128])
 ▼
 STAGE 7: UNCERTAINTY-AWARE GATING
+│   └── Dynamic neural gate modulating context via residual prior:
+│       h_gated = g * h + (1 - g) * prior,  g in [0.0, 1.0]^D
 ▼
 STAGE 8: LATENT SENTIMENT MAPPING
+│   ├── 4-Stream Synthesis (Emotion Dynamics + Gated Context + Transitions + Affect)
+│   ├── Latent Affective Sequence: Z in R^{[B, T=16, 128]}
+│   └── Temporal Attention Pooling: z_pooled in R^{[B, 128]}
 ▼
 STAGE 9: SENTIMENT DERIVATION AND MAPPING
+│   ├── 3-Class Categorical Sentiment: Negative (0), Neutral (1), Positive (2)
+│   ├── Continuous Sentiment Polarity Score: s in [-1.0, 1.0]
+│   └── Sentiment Prediction Confidence: c in [0.0, 1.0]
 ▼
 STAGE 10: EXPLAINABLE AI (XAI)
+    └── Upstream attributions across modalities, emotions, transitions, and gating
 ```
 
 ---
 
-## 3. Work Completed Till Now
+## 3. Work Completed Across Phases
 
 ### Phase 1: Dataset Exploration & Preprocessing
+- **Empirical Audit**: 1,102 video clips (432 Train, 303 Val, 367 Test) verified with 0 corrupted files.
+- **Multi-Label Class Imbalance**: Calculated exact `pos_weight` ratios for `torch.nn.BCEWithLogitsLoss`:
+  - *Happiness* ($0.93$), *Curiosity* ($1.92$), *Excitement* ($2.00$), *Uncertainty* ($2.27$), *Surprise* ($2.79$), *Disgust* ($6.20$), *Frustration* ($7.15$), *Fear* ($24.41$).
+  - $64.8\%$ of samples feature $\ge 2$ co-occurring active emotions.
+- **Preprocessing Module** ([`preprocessing.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/data/preprocessing.py)):
+  - Built standardized manifest generator, media validator, frame extractor, and optional 16 kHz mono WAV audio extraction.
+  - Generates [`data/processed/processed_manifest.json`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/data/processed/processed_manifest.json) and summary report.
+- **Experiment Notebook**: [`notebooks/01_dataset_exploration.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/01_dataset_exploration.ipynb).
 
-- **Dataset Audit & Empirical Inspection**:
-  - Recursively analyzed `datasets/EmoReact_V_1.0` (1,102 video clips: 432 Train, 303 Validation, 367 Test, split in a person-independent manner).
-  - Verified 9-column annotation schema across `Labels/*_labels.text`:
-    - Columns 0–7: Discrete multi-label emotions (*Curiosity*, *Uncertainty*, *Excitement*, *Happiness*, *Surprise*, *Disgust*, *Fear*, *Frustration*).
-    - Column 8: Continuous *Valence* rating ($[1.0, 7.0]$ Likert scale).
-  - Confirmed 0 corrupted or missing video files across all splits.
-  - Profiled physical media: 1,034 clips at $1280 \times 720$, 68 clips at $640 \times 360$; 947 at $23.976$ FPS, 155 at $29.97$ FPS; durations range from $2.8$s to $14.3$s.
-  - Documented that raw EmoReact V1.0 contains no dialogue/text transcripts; handled gracefully as an optional modality.
-  - Identified severe class imbalance and calculated exact positive weight ratios (`pos_weight`) for multi-label `torch.nn.BCEWithLogitsLoss`:
-    - *Happiness*: $0.93$ (51.9% positive)
-    - *Curiosity*: $1.92$ (34.3% positive)
-    - *Excitement*: $2.00$ (33.3% positive)
-    - *Uncertainty*: $2.27$ (30.6% positive)
-    - *Surprise*: $2.79$ (26.4% positive)
-    - *Disgust*: $6.20$ (13.9% positive)
-    - *Frustration*: $7.15$ (12.3% positive)
-    - *Fear*: $24.41$ (3.9% positive)
-  - Multi-label complexity shows $64.8\%$ of clips feature $\ge 2$ active emotions simultaneously.
+### Phase 2 & 3: Modality-Specific Feature Encoders
+- **Video Encoder** ([`video_encoder.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/encoders/video_encoder.py)):
+  - Pretrained ResNet-18 backbone with pool5 visual feature extraction ($512$-dim per frame).
+  - Preserves temporal order via $(B, T, C, H, W) \leftrightarrow (B \cdot T, C, H, W)$ folding/unfolding.
+  - Video transforms in [`transforms.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/data/transforms.py).
+- **Audio Encoder** ([`audio_encoder.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/encoders/audio_encoder.py)):
+  - 64-band Log-Mel spectrogram preprocessing ($16$ kHz, $25$ ms FFT window, $10$ ms hop).
+  - 2D-CNN feature extractor mapping spectrograms to $[B, T=16, 128]$.
+- **Text Encoder** ([`text_encoder.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/encoders/text_encoder.py)):
+  - Pretrained DistilBERT with adaptive pooling to $[B, T=16, 128]$. Transcripts are documented as optional/absent in raw EmoReact V1.0 without fabricating artificial data.
+- **Experiment Notebooks**: [`notebooks/02_video_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/02_video_experiments.ipynb), [`notebooks/03_audio_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/03_audio_experiments.ipynb), [`notebooks/04_text_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/04_text_experiments.ipynb).
 
-- **Preprocessing Module (`src/sentiment_derivation/data/preprocessing.py`)**:
-  - Implemented modular, beginner-friendly functions with strict type hinting and docstrings.
-  - `load_annotations()`: Reads and numerically validates 9-column rows without fabricating artificial labels.
-  - `get_split_sample_ids()`: Collects sorted video stems, filtering out OS cache files (e.g., `Thumbs.db`).
-  - `match_annotations_with_media()`: Guarantees 1:1 deterministic alignment between annotations and video files.
-  - `inspect_media_file()`: Verifies video decodability, duration, frame counts, and resolution via OpenCV.
-  - `extract_audio_from_video()`: Standardizes MP4 audio to 16 kHz mono 16-bit uncompressed PCM WAV using FFmpeg.
-  - `extract_sample_frames()`: Uniformly samples $T$ RGB frames from video clips.
-  - `verify_visual_features()`: Confirms presence of OpenFace 1.0 feature triplets (`.params.txt`, `_au.txt`, `_gaze.txt`).
-  - `build_standardized_sample()`: Produces sample dictionaries adhering to architectural contracts.
-  - `build_processed_manifest()` & `compute_manifest_statistics()`: End-to-end dataset processing and statistical aggregation with `pos_weight` ratios and video profiling.
-  - `save_manifest()` / `load_manifest()`: Manifest JSON serialization and parsing.
+### Phase 4: Multimodal Alignment & Cross-Modal Attention Fusion
+- **Modality Aligner** ([`alignment.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/fusion/alignment.py)):
+  - Linear sequence-position resampling mapping heterogeneous modalities (video $512$, audio $128$, text $128$) to common dimension $D=128$ and step count $T=16$.
+  - Generates boolean availability mask `modality_mask` ($[B, 3]$) tracking present versus absent modalities.
+- **Cross-Modal Attention Fusion** ([`multimodal_fusion.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/fusion/multimodal_fusion.py)):
+  - Learned query attending across available modalities at each sequence step independently without temporal leakage.
+  - Preserves sequence shape $[B, T=16, 128]$ and exposes cross-modal attention weights for XAI.
+- **Unit Tests**: [`tests/test_fusion.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/tests/test_fusion.py) (13 tests passing).
 
-- **Configuration & Execution Script**:
-  - `configs/data.yaml`: Authoritative configuration for dataset paths, candidate root resolution (Colab/Local), splits, label ordering, and preprocessing flags.
-  - `scripts/prepare_data.py`: CLI entry point generating `data/processed/processed_manifest.json` and `preprocessing_summary.json`.
+### Phase 5: Affective State & Multi-Label Emotion Derivation
+- **Affective State Estimator** ([`affective_state.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/emotion/affective_state.py)):
+  - Bounded continuous valence prediction: $\text{valence} = 1.0 + (7.0 - 1.0) \cdot \sigma(\text{raw}) \in [1.0, 7.0]$ matching EmoReact ground truth Likert scale.
+  - Generates dense 64-dimensional latent affective state embeddings and normalized certainty scores.
+- **Emotion Classifier & Parallel Representation** ([`emotion_classifier.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/emotion/emotion_classifier.py)):
+  - **`AGENTS.md` Constraint 3**: Maintains logically separate **Emotion Branch** ($[B, T, 128]$) and **Context Branch** ($[B, T, 128]$).
+  - Multi-label sigmoid probabilities across 8 discrete classes.
+  - **`AGENTS.md` Constraint 4**: Estimates independent emotion-wise confidence ($c_k = |2p_k - 1| \in [0.0, 1.0]$) and uncertainty ($u_k = 1.0 - c_k$). Never averages confidences into a single scalar.
+  - Unified [`MultimodalEmotionPipeline`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/emotion/emotion_classifier.py) satisfying the Section 6 contract.
+- **Unit Tests & Notebook**: [`tests/test_emotion.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/tests/test_emotion.py) (15 tests passing) and [`notebooks/05_emotion_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/05_emotion_experiments.ipynb).
 
-- **Exploration Notebook**:
-  - `notebooks/01_dataset_exploration.ipynb`: Executable 21-cell notebook covering Colab/Local environment detection, GPU verification, directory trees, annotation parsing, label distributions with `pos_weight` ratios, emotion-valence correlation heatmap, audio waveform & 64-channel Log-Mel Spectrogram, video metadata profiling, and OpenFace features.
+### Phase 6: Uncertainty Estimation, Calibration & Gating
+- **Temperature Calibrator** ([`calibration.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/uncertainty/calibration.py)):
+  - Multi-label temperature scaling (`MultiLabelTemperatureCalibrator`) learning per-emotion temperatures $T_k > 0$ on validation sets via BCE loss minimization.
+  - Implements multi-label Expected Calibration Error (ECE across 10 bins) and Brier scores.
+- **Certainty Estimator** ([`certainty_estimator.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/uncertainty/certainty_estimator.py)):
+  - Margin confidence, Shannon binary entropy, and Monte Carlo (MC) Dropout decomposing epistemic variance from aleatoric entropy.
+- **Uncertainty-Aware Gate** ([`uncertainty_gate.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/uncertainty/uncertainty_gate.py)):
+  - Modulates contextual representations via dynamic acceptance weights $g_t = \sigma(\text{MLP}([h_t, p_t, u_t, c_{\text{val}, t}])) \in [0.0, 1.0]^D$.
+  - Residual prior convex combination: $h_{\text{gated}} = g \odot h + (1 - g) \odot \text{prior}$.
+  - Explicit `enabled=False` switch for required ablation experiments. Exposes temporal saliency for XAI.
+- **Unit Tests & Notebook**: [`tests/test_uncertainty.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/tests/test_uncertainty.py) (9 tests passing) and [`notebooks/06_uncertainty_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/06_uncertainty_experiments.ipynb).
 
-- **Automated Test Suite**:
-  - `tests/test_data.py`: 12 comprehensive unit and integration tests covering annotation parsing, schema validation, non-binary error handling, media inspection, manifest construction, and real dataset integrity (100% passing).
+### Phase 7: Temporal Encoding & Emotion Transition Analysis
+- **BiLSTM Temporal Encoder** ([`temporal_encoder.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/temporal/temporal_encoder.py)):
+  - 1-layer bidirectional LSTM ($128 \to 128$) with residual skip-connection and LayerNorm stabilization modeling temporal context across $T=16$ steps.
+- **Transition Analyzer** ([`transition_analyzer.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/temporal/transition_analyzer.py)):
+  - First-order Delta Emotion velocity ($\Delta E_t = E_t - E_{t-1}$ with $\Delta E_0 = \mathbf{0}$).
+  - Exponential Moving Average (EMA) Persistence ($P_t = \alpha P_{t-1} + (1 - \alpha) E_t$) separating transient spikes from sustained emotions.
+  - Softmax Temporal Attention ($\alpha_t$) weighting salient transition moments across the clip.
+  - Disentangled composite transition representation fusing Emotion ($64$), Affect ($32$), and Confidence ($32$) streams into $[B, T, 128]$.
+- **Unit Tests & Notebook**: [`tests/test_temporal.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/tests/test_temporal.py) (7 tests passing) and [`notebooks/07_temporal_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/07_temporal_experiments.ipynb).
 
-- **Documentation**:
-  - `data/README.md`: Detailed documentation on the EmoReact dataset, directory structures, schema definitions, and preprocessing execution.
-
----
-
-### Phase 2: Visual Modality Feature Encoder
-
-- **Video Feature Encoder (`src/sentiment_derivation/encoders/video_encoder.py`)**:
-  - Built on top of a pretrained **ResNet-18** visual backbone (`torchvision.models.resnet18`).
-  - Classification head (`fc`) replaced with `nn.Identity()` to extract 512-dimensional visual embeddings per frame.
-  - **Temporal Sequence Preservation**: Implemented folding $(B, T, C, H, W) \to (B \cdot T, C, H, W)$ for 2D CNN inference, and unfolding $(B \cdot T, 512) \to (B, T, 512)$, strictly preserving frame order ($t_1, \dots, t_T$) for the subsequent Stage 4 BiLSTM temporal encoder.
-  - Supports configurable backbone weight freezing (`freeze_encoder()`, `unfreeze_encoder()`) to prevent early overfitting.
-  - Full CPU and GPU compatibility.
-  - Standardized contract output format (`return_dict=True` returning `{"features": Tensor, "metadata": {...}}`).
-  - `VideoEncoder.from_config()` classmethod to construct instances from YAML configuration.
-
-- **Video Frame Transforms (`src/sentiment_derivation/data/transforms.py`)**:
-  - `VideoClipTransform`: Handles spatial resizing to $(224 \times 224)$ and ImageNet channel normalization ($\mu = [0.485, 0.456, 0.406]$, $\sigma = [0.229, 0.224, 0.225]$) across 4D and 5D video tensors while preserving the temporal sequence dimension $T$.
-
-- **Model Configuration (`configs/model.yaml`)**:
-  - Specifies visual backbone architecture, weights, feature dimension ($512$), spatial resolution, and freeze settings.
-
-- **Video Modality Experiment Notebook (`notebooks/02_video_experiments.ipynb`)**:
-  - Educational notebook detailing frame sampling, sequential timeline visualization, spatial transform pipelines, ResNet-18 layer hierarchy, and temporal order preservation for downstream BiLSTM modeling.
+### Phase 8 & 9: Latent Sentiment Mapping & Sentiment Derivation
+- **Latent Sentiment Mapper** ([`latent_mapper.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/sentiment/latent_mapper.py)):
+  - Synthesizes 4 distinct streams: Emotion Dynamics ($32$), Gated Context ($128$), Transition Embeddings ($128$), and Affective State ($64$).
+  - Produces step-wise latent affective sequence $\mathbf{Z} \in \mathbb{R}^{B \times T \times 128}$.
+  - Temporal attention pooling deriving summary latent vector $\mathbf{z}_{\text{pooled}} \in \mathbb{R}^{B \times 128}$ and saliency weights $\alpha_t \in [0.0, 1.0]$.
+- **Sentiment Head & Derivation** ([`sentiment_head.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/sentiment/sentiment_head.py)):
+  - 3-class categorical sentiment probabilities: $\mathbf{p}_{\text{sentiment}} = \text{Softmax}(\text{logits} / \tau) \in [0.0, 1.0]^3$ over `Negative` (0), `Neutral` (1), and `Positive` (2).
+  - Continuous sentiment polarity score: $s \in [-1.0, 1.0]$ via $\tanh$ regression.
+  - Sentiment confidence estimation ($c = p_{(1)} - p_{(2)} \in [0.0, 1.0]$).
+  - Ground truth derivation utility `valence_to_sentiment_label` with documented neutral margin $\delta = 0.25$ around $4.0$.
+  - End-to-end [`SentimentDerivationPipeline`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/src/sentiment_derivation/sentiment/sentiment_head.py) fulfilling the canonical Section 6 dictionary contract.
+- **Unit Tests & Notebook**: [`tests/test_sentiment.py`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/tests/test_sentiment.py) (13 tests passing) and [`notebooks/08_sentiment_experiments.ipynb`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/notebooks/08_sentiment_experiments.ipynb).
 
 ---
 
@@ -143,51 +166,90 @@ STAGE 10: EXPLAINABLE AI (XAI)
 
 ```text
 Multimodal-Sentiment-Derivation/
-├── README.md                               # Project documentation (this file)
-├── AGENTS.md                               # Authoritative system architecture & rules
-├── CONTRIBUTING.md                         # Contribution guidelines
+├── README.md                               # Project documentation & architectural summary
+├── AGENTS.md                               # Canonical system architecture & development rules
+├── CONTRIBUTING.md                         # Contribution & Git guidelines
 ├── LICENSE                                 # Project license
-├── pyproject.toml                          # Project configuration
-├── requirements.txt                        # Phase 1 & 2 dependencies
+├── pyproject.toml                          # Project metadata & pytest configuration
+├── requirements.txt                        # Project dependencies
 │
 ├── configs/
-│   ├── data.yaml                           # Dataset paths and preprocessing configuration
-│   └── model.yaml                          # Video encoder & model specifications
+│   ├── data.yaml                           # Dataset paths & preprocessing parameters
+│   └── model.yaml                          # Full 9-stage architecture hyperparameters
 │
 ├── data/
-│   ├── README.md                           # Dataset & preprocessing documentation
-│   ├── raw/                                # Raw data references
+│   ├── README.md                           # Detailed data & split documentation
+│   ├── raw/                                # Raw dataset references
 │   ├── splits/                             # Partition indices
-│   └── processed/                          # Preprocessed standardized outputs
-│       ├── processed_manifest.json         # Canonical dataset manifest
+│   └── processed/                          # Standardized processed outputs
+│       ├── processed_manifest.json         # Canonical dataset manifest (1,102 clips)
 │       └── preprocessing_summary.json      # Dataset validation summary
 │
 ├── datasets/
-│   └── EmoReact_V_1.0/                     # Raw EmoReact dataset (unmodified)
+│   └── EmoReact_V_1.0/                     # Raw EmoReact benchmark (unmodified)
 │       ├── ReadMe.txt                      # Original author documentation
-│       ├── Data/                           # Train / Validation / Test MP4 videos
+│       ├── Data/                           # Train / Validation / Test MP4 video clips
 │       ├── Labels/                         # train_labels, val_labels, test_labels
-│       └── Visual_features/                # OpenFace 1.0 extracted features
+│       └── Visual_features/                # OpenFace 1.0 extracted feature triplets
 │
 ├── notebooks/
-│   ├── 01_dataset_exploration.ipynb        # Dataset audit and exploration notebook
-│   └── 02_video_experiments.ipynb         # Video modality & ResNet-18 experiments
+│   ├── 01_dataset_exploration.ipynb        # Phase 1: Dataset audit & statistics
+│   ├── 02_video_experiments.ipynb         # Phase 2: Video frames & ResNet-18
+│   ├── 03_audio_experiments.ipynb         # Phase 3: Waveforms & Log-Mel spectrograms
+│   ├── 04_text_experiments.ipynb          # Phase 3: Text modality audit & DistilBERT
+│   ├── 05_emotion_experiments.ipynb       # Phase 5: Parallel branches & multi-label emotions
+│   ├── 06_uncertainty_experiments.ipynb   # Phase 6: Calibration, ECE & uncertainty gating
+│   ├── 07_temporal_experiments.ipynb      # Phase 7: BiLSTM, Delta Emotion & persistence
+│   └── 08_sentiment_experiments.ipynb     # Phase 8/9: Latent mapping & sentiment derivation
 │
 ├── src/
 │   └── sentiment_derivation/
 │       ├── __init__.py
 │       ├── data/
 │       │   ├── __init__.py
-│       │   ├── preprocessing.py            # Preprocessing pipeline functions
+│       │   ├── preprocessing.py            # Dataset loading, validation & manifest creation
 │       │   └── transforms.py               # Video frame transformations
-│       └── encoders/
-│           └── video_encoder.py            # Pretrained ResNet-18 Video Encoder
+│       ├── encoders/
+│       │   ├── video_encoder.py            # Pretrained ResNet-18 visual encoder (512-dim)
+│       │   ├── audio_encoder.py            # Log-Mel Spectrogram 2D-CNN audio encoder (128-dim)
+│       │   └── text_encoder.py             # DistilBERT text encoder (128-dim)
+│       ├── fusion/
+│       │   ├── alignment.py                # Sequence-position resampling & modality masking
+│       │   └── multimodal_fusion.py        # Cross-modal query attention fusion
+│       ├── emotion/
+│       │   ├── __init__.py
+│       │   ├── affective_state.py          # Continuous valence & affective state estimator
+│       │   └── emotion_classifier.py       # Parallel Emotion/Context branches & confidence
+│       ├── uncertainty/
+│       │   ├── __init__.py
+│       │   ├── calibration.py              # Temperature scaling, multi-label ECE & Brier score
+│       │   ├── certainty_estimator.py      # Margin, Shannon Entropy & MC-Dropout
+│       │   └── uncertainty_gate.py         # Dynamic neural gate with residual prior
+│       ├── temporal/
+│       │   ├── __init__.py
+│       │   ├── temporal_encoder.py         # BiLSTM sequence encoder (128-dim)
+│       │   └── transition_analyzer.py      # Delta emotion, persistence EMA & temporal attention
+│       └── sentiment/
+│           ├── __init__.py
+│           ├── latent_mapper.py            # 4-stream latent affective/sentiment synthesis
+│           └── sentiment_head.py           # 3-class sentiment head & valence-to-sentiment
 │
 ├── scripts/
 │   └── prepare_data.py                     # Preprocessing execution script
 │
-└── tests/
-    └── test_data.py                        # Unit & integration tests for data pipeline
+├── tests/
+│   ├── test_data.py                        # 12 unit tests for dataset preprocessing
+│   ├── test_fusion.py                      # 13 tests for alignment & cross-modal fusion
+│   ├── test_emotion.py                     # 15 tests for affective state & emotion derivation
+│   ├── test_uncertainty.py                 # 9 tests for calibration, ECE & gating
+│   ├── test_temporal.py                    # 7 tests for BiLSTM & transition analyzer
+│   └── test_sentiment.py                   # 13 tests for latent mapper & sentiment derivation
+│
+├── experiments/
+│   └── README.md                           # Experimentation protocols & notebook catalog
+│
+└── checkpoints/
+    └── README.md                           # Model checkpointing & persistence guide
 ```
 
 ---
@@ -195,7 +257,7 @@ Multimodal-Sentiment-Derivation/
 ## 5. Getting Started & Execution
 
 ### 1. Environment Setup
-Activate the project's dedicated virtual environment:
+Activate the project's virtual environment:
 ```powershell
 .\venv\Scripts\Activate.ps1
 ```
@@ -206,30 +268,43 @@ pip install -r requirements.txt
 ```
 
 ### 2. Run Data Preprocessing
-Generate the standardized dataset manifest and summary report:
+Generate the canonical dataset manifest and validation statistics:
 ```powershell
 python scripts/prepare_data.py
 ```
-*(To additionally extract standardized 16 kHz mono WAV audio files, pass `--extract-audio`)*
+*(To additionally extract standardized 16 kHz mono WAV audio files, append `--extract-audio`)*
 
 ### 3. Run Automated Tests
-Execute the unit and integration test suite:
+Execute the comprehensive 69-test automated suite across all implemented stages:
 ```powershell
-python -m pytest tests/test_data.py -v
+python -m pytest tests/ -v
 ```
+*(Currently: 67 passed, 2 CUDA tests skipped cleanly when running on CPU environments)*
 
-### 4. Run Exploration Notebooks
-Launch Jupyter Notebook to view and run the experiment notebooks:
+### 4. Interactive Experimentation
+Launch Jupyter Notebook to explore the interactive, self-contained experiment notebooks:
 ```powershell
-jupyter notebook notebooks/01_dataset_exploration.ipynb
-jupyter notebook notebooks/02_video_experiments.ipynb
+jupyter notebook notebooks/
 ```
 
 ---
 
 ## 6. Implementation Principles & Scientific Rules
 
-- **No Artificial Labels**: Emotion labels and affective states are strictly preserved in their original format; no synthetic sentiment labels are fabricated during preprocessing.
-- **Temporal Order Preservation**: Visual frame sequences preserve temporal order $T$ throughout the video encoder to provide dynamic sequence inputs to the Stage 4 BiLSTM.
-- **CPU & GPU Compatibility**: All modules operate on both CPU and CUDA-enabled devices.
-- **Modular Isolation**: Each component adheres strictly to defined interface contracts and type hints without cross-module side effects.
+1. **Strict Architectural Integrity**: Stages follow the canonical sequence from Stage 1 through Stage 9 without skipping or shortcuts.
+2. **Distinct Emotion and Context Branches**: The Emotion Branch and Context Branch remain logically isolated representations ([`AGENTS.md`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/AGENTS.md) Constraint 3).
+3. **Separate Emotion-Wise Confidence**: Prediction confidence and uncertainty are maintained strictly per individual emotion, never collapsed into a single scalar ([`AGENTS.md`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/AGENTS.md) Constraint 4).
+4. **Defined Uncertainty Mathematics**: Confidence and uncertainty maintain a rigorous relationship: $\text{confidence}_k = 1.0 - \text{uncertainty}_k$.
+5. **No Fabricated Labels**: EmoReact emotion annotations and continuous valence ratings are strictly preserved in their original form. Sentiment labels are derived using explicit, documented, and justified thresholds.
+6. **Hardware Portability**: Every single module operates identically on CPU and GPU.
+7. **Modular Contracts**: All modules expose typed input/output containers with dataclass and dictionary access matching [`AGENTS.md`](file:///c:/Niladri/empty/coding/projects/Multimodal-Sentiment-Derivation/AGENTS.md) Section 6 contracts.
+
+---
+
+## 7. Next Phase: Stage 10 Explainable AI (XAI)
+
+With Stages 1 through 9 fully implemented and tested, the final architectural stage is **Stage 10: Explainable AI (XAI)**:
+- **Modality Attribution**: Quantifying the contribution of visual, acoustic, and textual modalities.
+- **Emotion Attribution**: Identifying which discrete emotions drove the derived sentiment.
+- **Temporal Saliency**: Explaining the role of emotional transition inflection points using preserved temporal attention weights ($\alpha_t$) and gate weights ($g_t$).
+- **Human-Readable Explanations**: Generating interpretable verbal explanations faithful to the actual internal representations without modifying the final predictions.
