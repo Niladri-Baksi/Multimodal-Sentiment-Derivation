@@ -1,0 +1,32 @@
+# Project dependencies
+# Multimodal Emotion-to-Sentiment Derivation
+
+# Numerical computation & data structures
+numpy>=1.23.0
+pandas>=2.0.0
+
+# Scientific computing & signal/audio handling
+scipy>=1.10.0
+
+# Data visualization for exploration notebook
+matplotlib>=3.7.0
+seaborn>=0.12.0
+scikit-learn>=1.2.0
+
+# Interactive research notebooks
+jupyter>=1.0.0
+
+# Configuration management (YAML parsing)
+pyyaml>=6.0
+
+# Deep learning and pretrained modality encoders
+torch>=2.2.0
+torchvision>=0.17.0
+torchaudio>=2.2.0
+transformers>=4.38.0
+
+# Computer vision for video frame inspection and processing
+opencv-python>=4.8.0
+
+# Unit and integration testing
+pytest>=7.4.0

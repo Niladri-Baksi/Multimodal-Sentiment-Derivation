@@ -1,0 +1,112 @@
+# Model Architecture Configuration for Multimodal Sentiment Derivation
+# Canonical specifications for Stage 2 modality-specific feature encoders
+
+# Stage 2: Video Feature Encoder
+video_encoder:
+  architecture: "resnet18"           # Baseline visual backbone per AGENTS.md
+  pretrained: true                   # Load ImageNet pretrained weights
+  weights: "DEFAULT"                 # Canonical torchvision weight identifier
+  feature_dim: 512                   # Visual embedding dimension per frame (ResNet-18 pool5)
+  freeze_backbone: true              # Freeze weights during initial experiments per AGENTS.md
+  apply_transforms: false            # Set true to apply resizing & normalization inside encoder
+  image_size: [224, 224]             # Standard spatial input dimensions (height, width)
+  normalization:
+    mean: [0.485, 0.456, 0.406]      # ImageNet channel mean (RGB)
+    std: [0.229, 0.224, 0.225]       # ImageNet channel std (RGB)
+
+# Optional transcript encoder. Disabled for EmoReact V1.0, which has no text.
+text_encoder:
+  enabled: false
+  model_name: "distilbert-base-uncased"
+  pretrained: true
+  freeze_backbone: true
+  max_length: 48
+
+# Phase 4: Feature-level modality alignment. Sequence-position resampling
+# preserves order but does not assert timestamp synchronization.
+modality_alignment:
+  method: "sequence_position_linear_resampling"
+  target_steps: 16
+  video_input_dim: 512
+  audio_input_dim: 128
+  text_input_dim: 128
+  common_dim: 128
+  timestamp_synchronized: false
+
+# Phase 4: Lightweight cross-modal attention at each aligned sequence step.
+multimodal_fusion:
+  feature_dim: 128
+  num_heads: 4
+  hidden_dim: 256
+  dropout: 0.1
+
+# Stage 4 / Phase 5: Parallel Representation & Emotion Branch
+emotion_classifier:
+  input_dim: 128                     # Input feature dimension from Multimodal Fusion
+  emotion_dim: 128                   # Intermediate Emotion Branch representation dimension
+  context_dim: 128                   # Distinct parallel Context Branch representation dimension
+  num_emotions: 8                    # Multi-label discrete emotion count (EmoReact)
+  dropout: 0.1                       # Regularization dropout
+  temperature: 1.0                   # Logit calibration temperature
+  confidence_method: "margin"        # Metric: "margin" (|2p - 1|) or "entropy" (1 - H(p))
+
+# Stage 4 / Phase 5: Continuous Affective State Head
+affective_state:
+  input_dim: 128                     # Input feature dimension from Multimodal Fusion
+  hidden_dim: 128                    # Intermediate projection dimension
+  affective_dim: 64                  # Dense affective state embedding dimension
+  min_valence: 1.0                   # EmoReact continuous valence scale minimum
+  max_valence: 7.0                   # EmoReact continuous valence scale maximum
+  dropout: 0.1                       # Regularization dropout
+  bounded: true                      # Scale output strictly to [min_valence, max_valence]
+
+# Stage 4 & Stage 5: Temporal Sequence Encoding & Transition Analysis
+temporal:
+  input_dim: 128                     # Input feature dimension from Fusion / Emotion Branch
+  hidden_dim: 128                    # BiLSTM hidden dimension
+  num_layers: 1                      # Stacked BiLSTM layers
+  dropout: 0.1                       # Dropout probability
+  bidirectional: true                # Bidirectional recurrent encoding
+  residual: true                     # Skip-connection across BiLSTM
+  num_emotions: 8                    # Discrete emotion classes
+  context_dim: 128                   # Context stream dimension
+  affective_dim: 64                  # Affective state stream dimension
+  transition_dim: 128                # Composite transition representation dimension
+  persistence_alpha: 0.7             # Initial exponential moving average persistence decay
+  learnable_persistence: true        # Trainable per-emotion persistence alpha
+
+# Stage 7: Uncertainty-Aware Gating Network
+uncertainty:
+  method: "margin"                    # Deterministic per-emotion confidence from predicted probabilities
+  num_emotions: 8
+  eps: 1.0e-7
+
+uncertainty_gate:
+  feature_dim: 128                   # Feature sequence dimension to modulate
+  num_emotions: 8                    # Multi-label discrete emotions
+  valence_dim: 1                     # Valence confidence / affect feature dimension
+  hidden_dim: 64                     # Intermediate projection dimension
+  dropout: 0.1                       # Dropout probability
+  residual_prior: true               # Convex combination g * h + (1 - g) * prior
+  enabled: true                      # Set false for ablation experiments
+
+# Stage 8: Latent Sentiment Mapping
+latent_mapper:
+  feature_dim: 128                   # Dimension of gated context features
+  transition_dim: 128                # Dimension of composite transition embeddings
+  num_emotions: 8                    # Multi-label discrete emotion count
+  affective_dim: 64                  # Dense affective state embedding dimension
+  latent_dim: 128                    # Dimension of latent affective/sentiment representation
+  hidden_dim: 64                     # Intermediate stream projection dimension
+  dropout: 0.1                       # Regularization dropout
+  temporal_pooling: "attention"      # "attention", "mean", or "last"
+
+# Stage 9: Sentiment Derivation and Mapping Head
+sentiment_head:
+  latent_dim: 128                    # Input dimension from LatentMapper
+  num_classes: 3                     # Categorical sentiment polarities (Negative, Neutral, Positive)
+  hidden_dim: 64                     # Intermediate projection dimension
+  dropout: 0.1                       # Regularization dropout
+  temperature: 1.0                   # Logit calibration temperature
+  confidence_method: "margin"        # "margin" (p_top1 - p_top2), "max_prob", or "entropy"
+  neutral_margin: 0.25               # Neutral deadband margin around 4.0 for valence mapping

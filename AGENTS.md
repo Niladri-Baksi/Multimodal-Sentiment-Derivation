@@ -998,35 +998,44 @@ The README must describe the actual implemented system, not merely the planned a
 
 ## 15. FINAL DEVELOPMENT PRIORITIES
 
-Development should follow this order:
+Development should follow this staged order:
 
-Phase 1: Dataset Understanding and Preprocessing
+1. Phase 0 — Architecture and interface freezing: define architecture, tensor
+   dimensions, data contracts, and module responsibilities.
+2. Phase 1 — Project foundation: establish environment, dependencies,
+   configuration, logging, reproducibility, and repository setup.
+3. Phase 2 — Dataset exploration and preprocessing: understand data,
+   annotations, modalities, labels, timestamps, and splits.
+4. Phase 3 — Independent modality encoders: implement video, audio, and text
+   feature extraction.
+5. Phase 4 — Multimodal alignment and fusion: align modality representations
+   and generate fused representations.
+6. Phase 5 — Affective state and emotion derivation: derive affective-state
+   representations and multi-label emotion probabilities.
+7. Phase 6 — Certainty and uncertainty mechanism: estimate emotion-wise
+   confidence, calibrate predictions, and implement uncertainty gating.
+8. Phase 7 — Temporal representation and transition analysis: model emotion
+   evolution and produce transitional embeddings.
+9. Phase 8 — Latent mapping and sentiment derivation: combine the required
+   representations to derive sentiment and sentiment confidence.
+10. Phase 9 — Complete model integration: connect modules into an end-to-end
+    architecture.
+11. Phase 10 — Training and optimization: implement losses, training loops,
+    checkpoints, and optimization.
+12. Phase 11 — Evaluation and experimentation: evaluate modules and the
+    complete model, including ablation experiments.
+13. Phase 12 — Inference and final pipeline: build prediction scripts,
+    reproducible inference, and final documentation.
+14. Phase 13 — Explainable AI (XAI) and interpretability: explain actual
+    modality, feature, and temporal contributions without changing predictions.
 
-Phase 2: Individual Modality Encoders
-
-Phase 3: Multimodal Fusion
-
-Phase 4: Affective State and Emotion Prediction
-
-Phase 5: Emotion-wise Confidence and Uncertainty Estimation
-
-Phase 6: Multidimensional Representation
-
-Phase 7: Temporal Analysis and Transition Embeddings
-
-Phase 8: Uncertainty-aware Gating
-
-Phase 9: Latent Sentiment Mapping and Derivation
-
-Phase 10: Sentiment Confidence Estimation
-
-Phase 11: Explainable AI Integration
-
-Phase 12: End-to-End Integration and Evaluation
-
-Individual modules may be developed in parallel when their interfaces are frozen.
-
-The integration lead must ensure that the final pipeline follows the canonical architecture.
+Modules may be developed in parallel only after their interfaces and data
+contracts are frozen. The uncertainty gate may be implemented during Phase 6,
+but it must be connected only after temporal transition representations are
+available. This development order does not change the canonical runtime order:
+temporal transition representations must be available before uncertainty-aware
+gating and final sentiment mapping. The integration lead must preserve that
+runtime order when connecting the modules.
 
 ---
 

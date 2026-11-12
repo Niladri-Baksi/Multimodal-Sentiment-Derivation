@@ -1,0 +1,21 @@
+training:
+  epochs: 30
+  patience: 5
+  batch_size: 8
+  num_workers: 0
+  num_frames: 16
+  audio_duration_sec: 4.0
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+  device: auto
+  seed: 42
+  emotion_threshold: 0.5
+  use_emotion_pos_weight: true
+
+loss:
+  emotion_weight: 1.0
+  valence_weight: 1.0
+  sentiment_weight: 1.0
+
+output_dir: checkpoints
