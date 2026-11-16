@@ -89,7 +89,7 @@ class UncertaintyAwareGate(nn.Module):
             enabled: If False, completely bypasses the gate for ablation studies.
         """
         super().__init__()
-        if feature_dim <= 0 or num_emotions <= 0 or hidden_dim <= 0:
+        if feature_dim <= 0 or num_emotions <= 0 or hidden_dim <= 0 or valence_dim <= 0:
             raise ValueError("All dimension arguments must be positive integers.")
         if not 0.0 <= dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1); got {dropout}.")
@@ -140,42 +140,54 @@ class UncertaintyAwareGate(nn.Module):
         Returns:
             UncertaintyGateOutput with gated_features and gate_weights.
         """
-        if not self.enabled:
-            # Ablation bypass: gate is inactive, returning untouched features
-            ones_gate = torch.ones_like(features)
-            mean_saliency = torch.ones(
-                features.shape[:-1] + (1,), dtype=features.dtype, device=features.device
-            )
-            return UncertaintyGateOutput(
-                gated_features=features,
-                gate_weights=ones_gate,
-                temporal_saliency=mean_saliency,
-                enabled=False,
-            )
+        if not isinstance(features, torch.Tensor):
+            raise TypeError("features must be a torch.Tensor.")
+        if not isinstance(emotion_probabilities, torch.Tensor):
+            raise TypeError("emotion_probabilities must be a torch.Tensor.")
+        if not isinstance(emotion_uncertainty, torch.Tensor):
+            raise TypeError("emotion_uncertainty must be a torch.Tensor.")
+        if valence_confidence is not None and not isinstance(valence_confidence, torch.Tensor):
+            raise TypeError("valence_confidence must be a torch.Tensor or None.")
 
-        # Align dimensions: ensure 3D [B, T, *] or 2D [B, *]
         orig_ndim = features.ndim
+        if orig_ndim not in (1, 2, 3):
+            raise ValueError("features must have rank 1, 2, or 3.")
+        if not features.is_floating_point():
+            raise TypeError("features must use a floating-point dtype.")
         if orig_ndim == 1:
             features = features.unsqueeze(0).unsqueeze(0)
-            emotion_probabilities = emotion_probabilities.unsqueeze(0).unsqueeze(0)
-            emotion_uncertainty = emotion_uncertainty.unsqueeze(0).unsqueeze(0)
-            if valence_confidence is not None:
-                valence_confidence = valence_confidence.unsqueeze(0).unsqueeze(0)
         elif orig_ndim == 2:
-            # [B, D]
             features = features.unsqueeze(1)
-            emotion_probabilities = emotion_probabilities.unsqueeze(1)
-            emotion_uncertainty = emotion_uncertainty.unsqueeze(1)
-            if valence_confidence is not None:
-                valence_confidence = valence_confidence.unsqueeze(1)
-
         batch_size, steps, dim = features.shape
+        if batch_size == 0 or steps == 0:
+            raise ValueError("Feature batch and sequence dimensions must be non-empty.")
         if dim != self.feature_dim:
             raise ValueError(
                 f"Expected feature_dim={self.feature_dim}; got {dim} in features."
             )
 
-        # Default valence_confidence to neutral 0.5 certainty if omitted
+        def normalize_auxiliary(value: torch.Tensor, name: str, width: int) -> torch.Tensor:
+            if not value.is_floating_point():
+                raise TypeError(f"{name} must use a floating-point dtype.")
+            if orig_ndim == 1 and value.ndim == 1:
+                value = value.unsqueeze(0).unsqueeze(0)
+            elif orig_ndim == 2 and value.ndim == 2:
+                value = value.unsqueeze(1)
+            if value.ndim != 3 or value.shape != (batch_size, steps, width):
+                raise ValueError(
+                    f"{name} must have shape [{batch_size}, {steps}, {width}]; "
+                    f"received {tuple(value.shape)}."
+                )
+            return value
+
+        emotion_probabilities = normalize_auxiliary(
+            emotion_probabilities, "emotion_probabilities", self.num_emotions
+        )
+        emotion_uncertainty = normalize_auxiliary(
+            emotion_uncertainty, "emotion_uncertainty", self.num_emotions
+        )
+
+        # The default is a neutral numeric gate input, not a calibrated confidence.
         if valence_confidence is None:
             valence_confidence = torch.full(
                 (batch_size, steps, self.valence_dim),
@@ -183,8 +195,37 @@ class UncertaintyAwareGate(nn.Module):
                 dtype=features.dtype,
                 device=features.device,
             )
-        elif valence_confidence.ndim == 2 and valence_confidence.shape[-1] == 1:
-            valence_confidence = valence_confidence.unsqueeze(1)
+        else:
+            valence_confidence = normalize_auxiliary(
+                valence_confidence, "valence_confidence", self.valence_dim
+            )
+
+        inputs = (features, emotion_probabilities, emotion_uncertainty, valence_confidence)
+        if any(not bool(torch.isfinite(value).all()) for value in inputs):
+            raise ValueError("Gate inputs must contain only finite values.")
+        if bool(torch.any((emotion_probabilities < 0.0) | (emotion_probabilities > 1.0))):
+            raise ValueError("emotion_probabilities values must lie in [0, 1].")
+        if bool(torch.any((emotion_uncertainty < 0.0) | (emotion_uncertainty > 1.0))):
+            raise ValueError("emotion_uncertainty values must lie in [0, 1].")
+        if bool(torch.any((valence_confidence < 0.0) | (valence_confidence > 1.0))):
+            raise ValueError("valence_confidence values must lie in [0, 1].")
+
+        parameter = next(self.parameters())
+        if features.device != parameter.device:
+            raise ValueError(
+                f"Gate inputs are on {features.device}; gate is on {parameter.device}."
+            )
+        if any(value.device != features.device for value in inputs):
+            raise ValueError("All gate inputs must be on the same device.")
+        inputs = tuple(value.to(dtype=parameter.dtype) for value in inputs)
+        features, emotion_probabilities, emotion_uncertainty, valence_confidence = inputs
+
+        if not self.enabled:
+            ones_gate = torch.ones_like(features)
+            mean_saliency = torch.ones(
+                features.shape[:-1] + (1,), dtype=features.dtype, device=features.device
+            )
+            return UncertaintyGateOutput(features, ones_gate, mean_saliency, enabled=False)
 
         # 1. Form composite certainty evidence vector:
         # [features, emotion_probs, emotion_uncertainty, valence_confidence]
@@ -206,6 +247,12 @@ class UncertaintyAwareGate(nn.Module):
         else:
             # Multiplicative filtering
             gated_features = gate_weights * features
+
+        if any(
+            not bool(torch.isfinite(value).all())
+            for value in (gate_weights, temporal_saliency, gated_features)
+        ):
+            raise FloatingPointError("UncertaintyAwareGate produced non-finite outputs.")
 
         # Restore original dimension if input was 2D or 1D
         if orig_ndim == 2:

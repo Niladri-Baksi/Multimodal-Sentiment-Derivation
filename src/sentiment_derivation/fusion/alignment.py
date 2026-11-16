@@ -100,10 +100,33 @@ class ModalityAligner(nn.Module):
                 f"{modality} features must have shape [B, T, D] or [T, D]; "
                 f"received {tuple(value.shape)}."
             )
-        if value.shape[1] == 0:
-            raise ValueError(f"{modality} sequence must contain at least one step.")
+        if value.shape[0] == 0 or value.shape[1] == 0:
+            raise ValueError(f"{modality} batch and sequence dimensions must be non-empty.")
         if not value.is_floating_point():
             raise TypeError(f"{modality} features must have a floating-point dtype.")
+        if not torch.isfinite(value).all():
+            raise ValueError(f"{modality} features contain NaN or infinite values.")
+        return value
+
+    @staticmethod
+    def _availability_mask(
+        value: Optional[torch.Tensor],
+        *,
+        name: str,
+        batch_size: int,
+        reference: torch.Tensor,
+        default: bool,
+    ) -> torch.Tensor:
+        if value is None:
+            return torch.full(
+                (batch_size,), default, dtype=torch.bool, device=reference.device
+            )
+        if not isinstance(value, torch.Tensor) or value.dtype != torch.bool:
+            raise TypeError(f"{name} must be a boolean torch.Tensor.")
+        if value.shape != (batch_size,):
+            raise ValueError(f"{name} must have shape [{batch_size}].")
+        if value.device != reference.device:
+            raise ValueError(f"{name} must be on the feature device ({reference.device}).")
         return value
 
     def _project_and_resample(
@@ -115,7 +138,18 @@ class ModalityAligner(nn.Module):
                 f"{modality} feature dimension must be {expected_dim}; "
                 f"received {value.shape[-1]}."
             )
-        projected = self.projections[modality](value)
+        projection = self.projections[modality]
+        if value.device != projection.weight.device:
+            raise ValueError(
+                f"{modality} features are on {value.device}; aligner is on "
+                f"{projection.weight.device}."
+            )
+        if value.dtype != projection.weight.dtype:
+            raise ValueError(
+                f"{modality} feature dtype is {value.dtype}; aligner expects "
+                f"{projection.weight.dtype}."
+            )
+        projected = projection(value)
         if projected.shape[1] != self.target_steps:
             projected = F.interpolate(
                 projected.transpose(1, 2),
@@ -128,33 +162,55 @@ class ModalityAligner(nn.Module):
     def forward(
         self,
         video_features: FeatureInput,
-        audio_features: FeatureInput,
+        audio_features: Optional[FeatureInput],
         text_features: Optional[FeatureInput] = None,
         *,
+        audio_available: Optional[torch.Tensor] = None,
         text_available: Optional[torch.Tensor] = None,
     ) -> AlignedModalities:
         """Return projected, position-resampled features and availability mask.
 
-        ``text_available`` may mark transcript availability per batch row. If
-        omitted, supplied text features are considered available for every row.
-        Video and audio are required for this project's AV baseline.
+        ``audio_features`` and ``audio_available`` support an absent audio
+        stream and mixed-availability batches. When features are supplied and
+        no mask is given, audio is considered available for every row for
+        backward compatibility. Masked rows receive an explicit zero aligned
+        tensor and a false availability bit; those zeros are not valid audio
+        features. Video remains required. Text is optional.
         """
-        raw = {
-            "video": self._features_tensor(video_features, "video"),
-            "audio": self._features_tensor(audio_features, "audio"),
-        }
-        if raw["video"].shape[0] != raw["audio"].shape[0]:
-            raise ValueError(
-                "Video and audio batch sizes must match; got "
-                f"{raw['video'].shape[0]} and {raw['audio'].shape[0]}."
-            )
+        raw = {"video": self._features_tensor(video_features, "video")}
         batch_size = raw["video"].shape[0]
         reference = raw["video"]
-        for modality, value in raw.items():
-            if value.device != reference.device:
-                raise ValueError(f"{modality} features must be on {reference.device}.")
-            if value.dtype != reference.dtype:
-                raise ValueError("All supplied modality features must have the same dtype.")
+        if reference.device != self.projections["video"].weight.device:
+            raise ValueError("Video features and aligner must be on the same device.")
+        if reference.dtype != self.projections["video"].weight.dtype:
+            raise ValueError("Video feature dtype must match the aligner parameter dtype.")
+
+        audio_mask = self._availability_mask(
+            audio_available,
+            name="audio_available",
+            batch_size=batch_size,
+            reference=reference,
+            default=audio_features is not None,
+        )
+        if audio_features is None:
+            if bool(audio_mask.any()):
+                raise ValueError(
+                    "audio_available cannot mark audio present when audio_features is None."
+                )
+            aligned_audio = reference.new_zeros(
+                (batch_size, self.target_steps, self.common_dim)
+            )
+        else:
+            audio = self._features_tensor(audio_features, "audio")
+            if audio.shape[0] != batch_size:
+                raise ValueError(
+                    f"Video and audio batch sizes must match; got {batch_size} and "
+                    f"{audio.shape[0]}."
+                )
+            if audio.device != reference.device or audio.dtype != reference.dtype:
+                raise ValueError("Audio features must match video device and dtype.")
+            aligned_audio = self._project_and_resample(audio, "audio")
+            aligned_audio = aligned_audio.masked_fill(~audio_mask[:, None, None], 0.0)
 
         if text_features is not None:
             text = self._features_tensor(text_features, "text")
@@ -166,32 +222,23 @@ class ModalityAligner(nn.Module):
                 raise ValueError("Text features must match video device and dtype.")
             raw["text"] = text
 
-        if text_available is not None:
-            if not isinstance(text_available, torch.Tensor):
-                raise TypeError("text_available must be a boolean torch.Tensor.")
-            if text_available.shape != (batch_size,):
-                raise ValueError(
-                    f"text_available must have shape [{batch_size}]; "
-                    f"received {tuple(text_available.shape)}."
-                )
-            if text_available.dtype != torch.bool:
-                raise TypeError("text_available must have boolean dtype.")
-            if text_available.device != reference.device:
-                raise ValueError("text_available must be on the feature device.")
-            if text_features is None and bool(text_available.any()):
+        text_mask = self._availability_mask(
+            text_available,
+            name="text_available",
+            batch_size=batch_size,
+            reference=reference,
+            default=text_features is not None,
+        )
+        if text_features is None:
+            if bool(text_mask.any()):
                 raise ValueError(
                     "text_available cannot mark text present when text_features is None."
                 )
 
         aligned: Dict[str, torch.Tensor] = {}
-        for modality in ("video", "audio"):
-            aligned[modality] = self._project_and_resample(raw[modality], modality)
-
-        text_mask = torch.zeros(batch_size, dtype=torch.bool, device=reference.device)
+        aligned["video"] = self._project_and_resample(raw["video"], "video")
+        aligned["audio"] = aligned_audio
         if "text" in raw:
-            text_mask.fill_(True)
-            if text_available is not None:
-                text_mask = text_available
             aligned_text = self._project_and_resample(raw["text"], "text")
             aligned_text = aligned_text.masked_fill(~text_mask[:, None, None], 0.0)
             aligned["text"] = aligned_text
@@ -203,7 +250,7 @@ class ModalityAligner(nn.Module):
         modality_mask = torch.stack(
             (
                 torch.ones(batch_size, dtype=torch.bool, device=reference.device),
-                torch.ones(batch_size, dtype=torch.bool, device=reference.device),
+                audio_mask,
                 text_mask,
             ),
             dim=1,

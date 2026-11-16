@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multimodal-sentiment-derivation"
+version = "0.1.0"
+description = "Multimodal, uncertainty-aware emotion-to-sentiment derivation"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23.0",
+    "PyYAML>=6.0",
+    "torch",
+]
+
+[project.optional-dependencies]
+video = [
+    "torchvision",
+    "opencv-python>=4.8.0",
+]
+audio = [
+    "torchaudio",
+]
+text = [
+    "transformers",
+]
+dev = [
+    "pytest>=7.4.0",
+]
+research = [
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+    "matplotlib>=3.7.0",
+    "seaborn",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sentiment_derivation*"]
+namespaces = true

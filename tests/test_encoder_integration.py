@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -74,11 +75,13 @@ class DummyResNet(nn.Module):
 
 
 def test_video_encoder_output_to_aligner_mocked(monkeypatch: pytest.MonkeyPatch) -> None:
-    try:
-        from sentiment_derivation.encoders import video_encoder as video_module
-    except Exception as exc:
-        pytest.skip(f"Video integration unavailable: {exc}")
-    monkeypatch.setattr(video_module.models, "resnet18", lambda **kwargs: DummyResNet())
+    from sentiment_derivation.encoders import video_encoder as video_module
+
+    monkeypatch.setattr(
+        video_module,
+        "models",
+        SimpleNamespace(resnet18=lambda **kwargs: DummyResNet()),
+    )
     encoder = video_module.VideoEncoder(pretrained=False, freeze=False)
     encoded = encoder(torch.rand(2, 3, 3, 32, 32))
     aligned = ModalityAligner()(encoded, torch.randn(2, 16, 128))
@@ -90,10 +93,8 @@ def test_video_encoder_output_to_aligner_mocked(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_audio_encoder_output_to_aligner() -> None:
-    try:
-        from sentiment_derivation.encoders.audio_encoder import AudioEncoder
-    except Exception as exc:
-        pytest.skip(f"Audio integration unavailable: {exc}")
+    from sentiment_derivation.encoders.audio_encoder import AudioEncoder
+
     encoded = AudioEncoder().eval()(torch.randn(2, 1, 64, 41))
     aligned = ModalityAligner()(torch.randn(2, 8, 512), encoded)
     assert encoded.shape == (2, 16, 128)
@@ -101,3 +102,36 @@ def test_audio_encoder_output_to_aligner() -> None:
     assert aligned.features["audio"].device == encoded.device
     assert aligned.features["audio"].dtype == encoded.dtype
     assert torch.isfinite(aligned.features["audio"]).all()
+
+
+def test_text_encoder_output_to_aligner_mocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sentiment_derivation.encoders import text_encoder as text_module
+
+    class DummyTextBackbone(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embedding = nn.Embedding(32, 768)
+
+        def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
+            return type("Output", (), {"last_hidden_state": self.embedding(input_ids)})()
+
+    monkeypatch.setattr(
+        text_module.DistilBertModel,
+        "from_pretrained",
+        classmethod(lambda cls, _name: DummyTextBackbone()),
+    )
+    encoder = text_module.TextEncoder().eval()
+    ids = torch.randint(0, 32, (2, 12))
+    mask = torch.ones_like(ids)
+    with torch.no_grad():
+        text = encoder(ids, mask)
+    aligned = ModalityAligner()(
+        torch.randn(2, 8, 512),
+        torch.randn(2, 16, 128),
+        text,
+        text_available=mask.any(dim=1),
+    )
+    assert text.shape == (2, 16, 128)
+    assert aligned.features["text"].shape == (2, 16, 128)
+    assert aligned.modality_mask[:, 2].all()
+    assert torch.isfinite(aligned.features["text"]).all()

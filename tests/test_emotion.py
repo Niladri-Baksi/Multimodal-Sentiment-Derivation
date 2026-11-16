@@ -365,3 +365,121 @@ def test_gpu_execution_when_available(emotion_modules) -> None:
 
     assert emotion_out.logits.device.type == "cuda"
     assert affective_out.valence.device.type == "cuda"
+
+
+def test_single_step_sequence_preserves_temporal_dimension(emotion_modules) -> None:
+    classifier, estimator = emotion_modules
+    features = torch.randn(3, 1, 128)
+
+    emotion = classifier(features)
+    affect = estimator(features)
+
+    assert emotion.logits.shape == (3, 1, 8)
+    assert emotion.emotion_embeddings.shape == (3, 1, 128)
+    assert affect.valence.shape == (3, 1, 1)
+    assert affect.affective_state.shape == (3, 1, 64)
+
+
+def test_model_inputs_are_cast_to_parameter_dtype(emotion_modules) -> None:
+    classifier, estimator = emotion_modules
+    features = torch.randn(2, 3, 128, dtype=torch.float64)
+
+    emotion = classifier(features)
+    affect = estimator(features)
+
+    assert emotion.logits.dtype == torch.float32
+    assert affect.valence.dtype == torch.float32
+
+
+@pytest.mark.parametrize("rank_shape", [(0, 16, 128), (2, 0, 128)])
+def test_emotion_and_affect_reject_empty_batch_or_sequence(emotion_modules, rank_shape) -> None:
+    classifier, estimator = emotion_modules
+    features = torch.empty(rank_shape)
+    with pytest.raises(ValueError, match="non-empty"):
+        classifier(features)
+    with pytest.raises(ValueError, match="non-empty"):
+        estimator(features)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_emotion_and_affect_reject_non_finite_features(emotion_modules, value) -> None:
+    classifier, estimator = emotion_modules
+    features = torch.zeros(2, 3, 128)
+    features[0, 0, 0] = value
+    with pytest.raises(ValueError, match="NaN or infinite"):
+        classifier(features)
+    with pytest.raises(ValueError, match="NaN or infinite"):
+        estimator(features)
+
+
+def test_from_config_supports_custom_emotion_count_without_custom_names() -> None:
+    classifier = EmotionClassifier.from_config(
+        {"emotion_classifier": {"num_emotions": 3}}
+    )
+    assert classifier.num_emotions == 3
+    assert classifier.emotion_names == ("Emotion_0", "Emotion_1", "Emotion_2")
+
+
+def test_emotion_and_affect_raise_on_non_finite_model_outputs() -> None:
+    classifier = EmotionClassifier(dropout=0.0)
+    estimator = AffectiveStateEstimator(dropout=0.0)
+    with torch.no_grad():
+        classifier.emotion_head[2].bias[0] = float("inf")
+        estimator.valence_head[2].bias[0] = float("nan")
+
+    features = torch.randn(2, 3, 128)
+    with pytest.raises(FloatingPointError, match="EmotionClassifier"):
+        classifier(features)
+    with pytest.raises(FloatingPointError, match="AffectiveStateEstimator"):
+        estimator(features)
+
+
+def test_non_finite_temperature_and_valence_bounds_are_rejected() -> None:
+    with pytest.raises(ValueError, match="temperature must be finite"):
+        EmotionClassifier(temperature=float("inf"))
+    with pytest.raises(ValueError, match="Valence bounds must be finite"):
+        AffectiveStateEstimator(min_valence=float("nan"), max_valence=7.0)
+
+
+def test_pipeline_preserves_single_step_and_propagates_gradients() -> None:
+    classifier = EmotionClassifier(dropout=0.0)
+    estimator = AffectiveStateEstimator(dropout=0.0)
+    pipeline = MultimodalEmotionPipeline(classifier, estimator)
+    features = torch.randn(2, 1, 128, requires_grad=True)
+
+    outputs = pipeline({"features": features})
+    loss = outputs["emotion_logits"].square().mean() + outputs["valence"].mean()
+    loss.backward()
+
+    assert outputs["emotion_probabilities"].shape == (2, 1, 8)
+    assert outputs["affective_state"].shape == (2, 1, 64)
+    assert features.grad is not None and torch.isfinite(features.grad).all()
+    assert classifier.emotion_head[2].weight.grad is not None
+    assert estimator.valence_head[2].weight.grad is not None
+
+
+def test_phase4_to_phase5_pipeline_propagates_gradients() -> None:
+    aligner = ModalityAligner()
+    fusion = MultimodalFusion(dropout=0.0)
+    classifier = EmotionClassifier(dropout=0.0)
+    estimator = AffectiveStateEstimator(dropout=0.0)
+    pipeline = MultimodalEmotionPipeline(classifier, estimator)
+
+    video = torch.randn(2, 5, 512, requires_grad=True)
+    audio = torch.randn(2, 11, 128, requires_grad=True)
+    text = torch.randn(2, 7, 128, requires_grad=True)
+    fused = fusion(aligner(video, audio, text))
+    output = pipeline(fused)
+    loss = output["emotion_logits"].square().mean() + output["valence"].mean()
+    loss.backward()
+
+    assert fused["features"].shape == (2, 16, 128)
+    assert output["emotion_probabilities"].shape == (2, 16, 8)
+    assert output["valence"].shape == (2, 16, 1)
+    assert output["affective_state"].shape == (2, 16, 64)
+    for tensor in (video, audio, text):
+        assert tensor.grad is not None and torch.isfinite(tensor.grad).all()
+    assert aligner.projections["video"].weight.grad is not None
+    assert fusion.cross_modal_attention.in_proj_weight.grad is not None
+    assert classifier.emotion_head[2].weight.grad is not None
+    assert estimator.valence_head[2].weight.grad is not None

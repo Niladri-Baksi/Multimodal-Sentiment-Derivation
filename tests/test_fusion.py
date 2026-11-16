@@ -139,8 +139,75 @@ def test_text_mask_validation_and_required_modalities(modules) -> None:
         features=aligned.features,
         modality_mask=torch.tensor([[False, True, False], [True, True, False]]),
     )
-    with pytest.raises(ValueError, match="Video and audio"):
+    with pytest.raises(ValueError, match="Video must be available"):
         fusion(broken)
+
+
+def test_mixed_audio_availability_is_zeroed_and_masked(modules) -> None:
+    aligner, fusion = modules
+    video, audio, _ = _features()
+    # The second row contains arbitrary values but is explicitly unavailable.
+    available = torch.tensor([True, False])
+    aligned = aligner(video, audio, audio_available=available)
+    result = fusion(aligned, return_attention_weights=True)
+
+    assert aligned.modality_mask[:, 1].tolist() == [True, False]
+    assert torch.count_nonzero(aligned.features["audio"][1]) == 0
+    assert torch.count_nonzero(result["attention_weights"][1, :, 1]) == 0
+    assert torch.allclose(result["attention_weights"].sum(-1), torch.ones(2, 16))
+    assert torch.isfinite(result["features"]).all()
+
+
+def test_audio_can_be_absent_for_entire_batch(modules) -> None:
+    aligner, fusion = modules
+    video, _, _ = _features()
+    aligned = aligner(video, None)
+    result = fusion(aligned, return_attention_weights=True)
+
+    assert aligned.modality_mask.tolist() == [[True, False, False]] * 2
+    assert torch.count_nonzero(aligned.features["audio"]) == 0
+    assert torch.count_nonzero(result["attention_weights"][..., 1:]) == 0
+    assert torch.allclose(result["attention_weights"][..., 0], torch.ones(2, 16))
+
+
+def test_audio_mask_cannot_claim_missing_audio_is_present() -> None:
+    aligner = ModalityAligner()
+    video = torch.randn(2, 8, 512)
+    with pytest.raises(ValueError, match="audio_features is None"):
+        aligner(video, None, audio_available=torch.tensor([True, False]))
+
+
+def test_fusion_rejects_sample_with_no_available_modality(modules) -> None:
+    aligner, fusion = modules
+    video, audio, _ = _features()
+    aligned = aligner(video, audio)
+    no_modalities = AlignedModalities(
+        features=aligned.features,
+        modality_mask=torch.tensor([[False, False, False], [True, True, False]]),
+    )
+    with pytest.raises(ValueError, match="At least one modality"):
+        fusion(no_modalities)
+
+
+def test_alignment_rejects_empty_non_finite_and_non_floating_inputs() -> None:
+    aligner = ModalityAligner()
+    with pytest.raises(ValueError, match="non-empty"):
+        aligner(torch.empty(0, 8, 512), torch.randn(0, 16, 128))
+    with pytest.raises(ValueError, match="NaN or infinite"):
+        aligner(torch.full((1, 8, 512), float("nan")), torch.randn(1, 16, 128))
+    with pytest.raises(TypeError, match="floating-point"):
+        aligner(torch.ones(1, 8, 512, dtype=torch.long), torch.randn(1, 16, 128))
+
+
+def test_fusion_rejects_non_finite_aligned_features(modules) -> None:
+    aligner, fusion = modules
+    video, audio, _ = _features()
+    aligned = aligner(video, audio)
+    broken_features = dict(aligned.features)
+    broken_features["audio"] = broken_features["audio"].clone()
+    broken_features["audio"][0, 0, 0] = float("inf")
+    with pytest.raises(ValueError, match="audio aligned features contain"):
+        fusion(AlignedModalities(broken_features, aligned.modality_mask))
 
 
 def test_gradients_reach_projection_and_fusion_parameters(modules) -> None:

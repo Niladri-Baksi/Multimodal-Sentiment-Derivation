@@ -26,9 +26,19 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torchvision import models
+try:
+    from torchvision import models
+except ModuleNotFoundError as exc:  # Allow encoder inspection and mocked-backbone use.
+    if exc.name != "torchvision":
+        raise
+    models = None  # type: ignore[assignment]
 
-from sentiment_derivation.data.transforms import VideoClipTransform
+try:
+    from sentiment_derivation.data.transforms import VideoClipTransform
+except ModuleNotFoundError as exc:  # Transform support is optional unless requested.
+    if exc.name != "torchvision":
+        raise
+    VideoClipTransform = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +76,13 @@ class VideoEncoder(nn.Module):
             image_size: Target image dimensions if apply_transforms is True.
         """
         super().__init__()
+        if models is None:
+            raise ImportError(
+                "VideoEncoder requires torchvision for ResNet-18; install a compatible "
+                "torchvision build or inject a compatible backbone for testing."
+            )
+        if feature_dim <= 0:
+            raise ValueError("feature_dim must be positive.")
         self.feature_dim = feature_dim
         self.freeze_backbone = freeze
         self.apply_transforms = apply_transforms
@@ -92,6 +109,10 @@ class VideoEncoder(nn.Module):
 
         # 4. Optional built-in frame transformation module
         if apply_transforms:
+            if VideoClipTransform is None:
+                raise ImportError(
+                    "VideoEncoder internal transforms require torchvision."
+                )
             self.transform: Optional[VideoClipTransform] = VideoClipTransform(image_size=image_size)
         else:
             self.transform = None
@@ -166,9 +187,31 @@ class VideoEncoder(nn.Module):
                 f"VideoEncoder expects 4D (T, C, H, W) or 5D (B, T, C, H, W) tensor, got {input_dim}D tensor."
             )
 
+        if any(size == 0 for size in frames.shape):
+            raise ValueError("Video input must have non-empty batch and frame dimensions.")
+        channel_dim = 1 if input_dim == 4 else 2
+        if frames.shape[channel_dim] != 3:
+            raise ValueError("Video input must contain exactly 3 RGB channels.")
+        spatial_dims = frames.shape[-2:]
+        if any(size <= 0 for size in spatial_dims):
+            raise ValueError("Video frame height and width must be positive.")
+        if not frames.is_floating_point():
+            raise TypeError("VideoEncoder input must be a floating-point tensor.")
+        if not torch.isfinite(frames).all():
+            raise ValueError("Video input contains NaN or infinite values.")
+
         # Apply optional internal spatial transforms (resizing, ImageNet normalization)
         if self.transform is not None:
             frames = self.transform(frames)
+
+        parameter = next(self.backbone.parameters(), None)
+        if parameter is not None:
+            if frames.device != parameter.device:
+                raise ValueError(
+                    f"Video input is on {frames.device}; encoder is on {parameter.device}."
+                )
+            if frames.dtype != parameter.dtype:
+                frames = frames.to(dtype=parameter.dtype)
 
         # Handle 4D input (single video sequence without batch dimension): (T, C, H, W)
         if input_dim == 4:

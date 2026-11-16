@@ -5,12 +5,13 @@ Reference: AGENTS.md | Canonical Architecture Stage 4 & Phase 6.
 This module provides:
 1. UncertaintyOutput: Standardized container storing emotion-wise confidence and uncertainty
    tensors, preserving per-emotion categories without premature scalar collapse.
-2. UncertaintyEstimator: Module computing aleatoric uncertainty (Margin, Shannon Binary Entropy)
-   and optional epistemic uncertainty via Monte Carlo (MC) Dropout.
+2. UncertaintyEstimator: Module computing per-label probability ambiguity scores and optional
+   stochastic variance/entropy proxies from Monte Carlo (MC) Dropout.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
@@ -33,8 +34,8 @@ class UncertaintyOutput:
         uncertainty: Per-emotion uncertainty shaped like ``confidence``, normalized to [0.0, 1.0].
             Higher values indicate higher ambiguity (probability near 0.5 decision boundary).
         method: Estimation method used ('margin', 'entropy', or 'mc_dropout').
-        epistemic_uncertainty: Optional model parameter uncertainty (from MC-Dropout variance).
-        aleatoric_uncertainty: Optional data noise uncertainty (from average entropy).
+        epistemic_uncertainty: Optional normalized stochastic-pass variance proxy.
+        aleatoric_uncertainty: Optional mean per-pass binary entropy proxy.
         emotion_names: Optional tuple of emotion class names.
     """
 
@@ -67,9 +68,9 @@ class UncertaintyOutput:
 
 
 class UncertaintyEstimator(nn.Module):
-    """Estimate emotion-wise confidence and uncertainty from predicted probabilities.
+    """Compute emotion-wise probability ambiguity scores from predicted probabilities.
 
-    Supports three scientifically established formulations:
+    Supports:
     1. **Margin** (Default in Phase 5 baseline):
        - Confidence: c_k = 2 * |p_k - 0.5| in [0, 1]
        - Uncertainty: u_k = 1.0 - c_k in [0, 1]
@@ -78,9 +79,11 @@ class UncertaintyEstimator(nn.Module):
          H_k(p) = - [ p * log2(p + eps) + (1 - p) * log2(1 - p + eps) ] in [0, 1]
        - Uncertainty: u_k = H_k(p)
        - Confidence: c_k = 1.0 - u_k
-    3. **MC-Dropout** (Epistemic and Aleatoric decomposition):
-       - Epistemic variance: Var_T(p^(t))
-       - Aleatoric entropy: E_T[H(p^(t))]
+    3. **MC-Dropout summary** (stochastic proxies):
+       - Normalized variance proxy: min(Var_S(p^(s)) / 0.25, 1)
+       - Mean entropy proxy: E_S[H(p^(s))]
+       - Reported total is their equal-weight average; it is a heuristic, not a calibrated
+         or exact epistemic/aleatoric decomposition.
     """
 
     SUPPORTED_METHODS = ("entropy", "margin", "mc_dropout")
@@ -107,10 +110,14 @@ class UncertaintyEstimator(nn.Module):
             raise ValueError(
                 f"Unsupported method '{method}'. Supported methods: {self.SUPPORTED_METHODS}"
             )
-        if num_emotions <= 0:
+        if not isinstance(num_emotions, int) or isinstance(num_emotions, bool) or num_emotions <= 0:
             raise ValueError("num_emotions must be a positive integer.")
-        if eps <= 0.0 or eps >= 0.1:
+        if not math.isfinite(eps) or eps <= 0.0 or eps >= 0.1:
             raise ValueError("eps must be in range (0.0, 0.1).")
+        if not isinstance(mc_samples, int) or isinstance(mc_samples, bool):
+            raise ValueError("mc_samples must be an integer.")
+        if mc_samples <= 0 or (method == "mc_dropout" and mc_samples < 2):
+            raise ValueError("mc_samples must be positive and at least 2 for mc_dropout.")
 
         self.method = method
         self.num_emotions = num_emotions
@@ -132,7 +139,10 @@ class UncertaintyEstimator(nn.Module):
         When p = 0.5, entropy = 1.0 (maximal uncertainty).
         When p = 0.0 or 1.0, entropy = 0.0 (minimal uncertainty).
         """
-        clamped_p = torch.clamp(probs, self.eps, 1.0 - self.eps)
+        calculation_probs = (
+            probs.float() if probs.dtype in (torch.float16, torch.bfloat16) else probs
+        )
+        clamped_p = torch.clamp(calculation_probs, self.eps, 1.0 - self.eps)
         entropy = -(
             clamped_p * torch.log2(clamped_p) + (1.0 - clamped_p) * torch.log2(1.0 - clamped_p)
         )
@@ -159,14 +169,9 @@ class UncertaintyEstimator(nn.Module):
         Returns:
             UncertaintyOutput container with confidence and uncertainty tensors.
         """
-        if not isinstance(probabilities, torch.Tensor):
-            raise TypeError(
-                f"probabilities must be a torch.Tensor; got {type(probabilities).__name__}."
-            )
-        if probabilities.shape[-1] != self.num_emotions:
-            raise ValueError(
-                f"Expected last dimension {self.num_emotions}; got {probabilities.shape[-1]}."
-            )
+        probabilities = self._validate_probabilities(probabilities, "probabilities")
+        if self.method == "mc_dropout" and model_fn is None:
+            raise ValueError("model_fn is required when method='mc_dropout'.")
 
         if self.method == "margin":
             conf, uncert = self._compute_margin(probabilities)
@@ -188,34 +193,28 @@ class UncertaintyEstimator(nn.Module):
             )
 
         elif self.method == "mc_dropout":
-            if model_fn is None:
-                # Fallback to single-pass entropy if model_fn is not provided
-                uncert = self._compute_entropy(probabilities)
-                conf = torch.clamp(1.0 - uncert, 0.0, 1.0)
-                return UncertaintyOutput(
-                    confidence=conf,
-                    uncertainty=uncert,
-                    method="entropy",
-                    emotion_names=self.emotion_names,
-                )
-
-            # Perform MC-Dropout sampling
+            # Perform MC-Dropout sampling. The callback is responsible for
+            # enabling stochastic model behavior (for example, dropout).
+            assert model_fn is not None
             samples = []
             for _ in range(self.mc_samples):
-                samples.append(model_fn())
-            # Stack into shape: [S, B, T, K] or [S, B, K]
+                sample = self._validate_probabilities(model_fn(), "model_fn output")
+                if sample.shape != probabilities.shape:
+                    raise ValueError("model_fn outputs must match probabilities shape.")
+                if sample.device != probabilities.device or sample.dtype != probabilities.dtype:
+                    raise ValueError("model_fn outputs must match probabilities device and dtype.")
+                samples.append(sample)
             stacked = torch.stack(samples, dim=0)
 
-            # Epistemic uncertainty: predictive variance across stochastic passes
+            # Epistemic uncertainty proxy: normalized variance across stochastic passes.
             epistemic = torch.var(stacked, dim=0, unbiased=False)
-            # Normalize variance: maximum variance of Bernoulli is 0.25 (at p=0.5)
             epistemic_norm = torch.clamp(epistemic / 0.25, 0.0, 1.0)
 
-            # Aleatoric uncertainty: expected binary entropy across stochastic passes
+            # Aleatoric uncertainty proxy: mean binary entropy across passes.
             sample_entropies = torch.stack([self._compute_entropy(s) for s in samples], dim=0)
             aleatoric = torch.mean(sample_entropies, dim=0)
 
-            # Total uncertainty: combination of aleatoric and epistemic
+            # Heuristic equal-weight average, not a calibrated total-uncertainty identity.
             total_uncertainty = torch.clamp(0.5 * (epistemic_norm + aleatoric), 0.0, 1.0)
             total_confidence = torch.clamp(1.0 - total_uncertainty, 0.0, 1.0)
 
@@ -229,6 +228,26 @@ class UncertaintyEstimator(nn.Module):
             )
 
         raise RuntimeError(f"Unexpected method state: {self.method}")
+
+    def _validate_probabilities(self, probabilities: torch.Tensor, name: str) -> torch.Tensor:
+        """Validate a batched or unbatched multi-label probability tensor."""
+        if not isinstance(probabilities, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor.")
+        if probabilities.ndim not in (1, 2, 3):
+            raise ValueError(f"{name} must have rank 1, 2, or 3; got {probabilities.ndim}.")
+        if probabilities.shape[-1] != self.num_emotions:
+            raise ValueError(
+                f"Expected last dimension {self.num_emotions}; got {probabilities.shape[-1]}."
+            )
+        if any(size == 0 for size in probabilities.shape):
+            raise ValueError(f"{name} dimensions must be non-empty.")
+        if not probabilities.is_floating_point():
+            raise TypeError(f"{name} must use a floating-point dtype.")
+        if not bool(torch.isfinite(probabilities).all()):
+            raise ValueError(f"{name} contains NaN or infinite values.")
+        if bool(torch.any((probabilities < 0.0) | (probabilities > 1.0))):
+            raise ValueError(f"{name} values must lie in [0, 1].")
+        return probabilities
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "UncertaintyEstimator":
