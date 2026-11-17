@@ -1,0 +1,103 @@
+# Data Configuration for Multimodal Emotion-to-Sentiment Derivation
+# Authoritative dataset paths and Phase 1 preprocessing settings
+
+dataset:
+  name: "EmoReact_V_1.0"
+  description: "Multimodal dataset of children's emotional reactions to diverse stimuli"
+  root_dir: "datasets/EmoReact_V_1.0"
+  random_seed: 42
+
+  # Colab and local path resolution candidates
+  root_dir_candidates:
+    - "datasets/EmoReact_V_1.0"
+    - "/content/data/EmoReact_V_1.0"
+    - "data/raw/EmoReact_V_1.0"
+
+  # Dataset split annotations (comma-separated, 8 binary emotion columns + 1 continuous valence column)
+  annotation_files:
+    train: "datasets/EmoReact_V_1.0/Labels/train_labels.text"
+    val: "datasets/EmoReact_V_1.0/Labels/val_labels.text"
+    test: "datasets/EmoReact_V_1.0/Labels/test_labels.text"
+
+  # Raw video directories
+  video_dirs:
+    train: "datasets/EmoReact_V_1.0/Data/Train"
+    val: "datasets/EmoReact_V_1.0/Data/Validation"
+    test: "datasets/EmoReact_V_1.0/Data/Test"
+
+  # Pre-extracted OpenFace visual feature directories
+  visual_feature_dirs:
+    train: "datasets/EmoReact_V_1.0/Visual_features/Train_feat"
+    val: "datasets/EmoReact_V_1.0/Visual_features/Val_feat"
+    test: "datasets/EmoReact_V_1.0/Visual_features/Test_feat"
+
+  # Standardized split sizes
+  expected_split_sizes:
+    train: 432
+    val: 303
+    test: 367
+    total: 1102
+
+labels:
+  # Multi-label discrete emotion categories (ordered strictly by column index 0..7)
+  emotions:
+    - "Curiosity"     # Col 0
+    - "Uncertainty"   # Col 1
+    - "Excitement"    # Col 2
+    - "Happiness"     # Col 3
+    - "Surprise"      # Col 4
+    - "Disgust"       # Col 5
+    - "Fear"          # Col 6
+    - "Frustration"   # Col 7
+
+  # Continuous affective state attribute (Col 8)
+  affective_attributes:
+    - name: "Valence"
+      min_value: 1.0
+      max_value: 7.0
+      description: "Continuous valence rating on 1-7 Likert scale averaged across annotators"
+
+modalities:
+  video:
+    enabled: true
+    format: "mp4"
+    resolutions:
+      primary: [1280, 720]
+      secondary: [640, 360]
+    expected_fps: [23.976, 29.97]
+    target_resolution: [224, 224] # Target resized dimensions for ResNet-18
+    extract_frames: false         # Set true to extract uniform frames during preprocessing
+    num_frames: 16               # Number of frames to extract per clip when extract_frames is true
+
+  audio:
+    enabled: true
+    extract_from_video: true      # Audio streams reside inside the MP4 video clips
+    target_sample_rate: 16000     # Standardized sample rate in Hz
+    channels: 1                   # Mono channel
+    format: "wav"                 # Output audio format
+    codec: "pcm_s16le"            # 16-bit PCM
+    log_mel_spectrogram:
+      n_mels: 64
+      n_fft: 400                  # 25 ms window at 16kHz
+      hop_length: 160             # 10 ms hop at 16kHz
+
+  text:
+    enabled: false
+    available: false
+    note: "Transcripts are not provided in EmoReact V1.0 release; maintained as optional/None in contracts."
+
+  visual_features:
+    enabled: true
+    available: true
+    format: "openface"
+    file_types:
+      - "params.txt"
+      - "_au.txt"
+      - "_gaze.txt"
+
+output:
+  processed_dir: "data/processed"
+  manifest_path: "data/processed/processed_manifest.json"
+  summary_path: "data/processed/preprocessing_summary.json"
+  audio_output_dir: "data/processed/audio"
+  frames_output_dir: "data/processed/frames"
