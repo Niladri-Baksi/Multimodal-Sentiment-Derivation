@@ -104,10 +104,16 @@ class VideoClipTransform(nn.Module):
         """
         # Case 1: List of NumPy arrays (T frames, each H x W x C uint8)
         if isinstance(video, list):
+            if not video:
+                raise ValueError("video frame list must not be empty.")
             tensor_frames = []
             for frame in video:
-                # Convert HWC uint8 -> CHW float32 [0.0, 1.0]
-                t_frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+                if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[-1] != 3:
+                    raise ValueError("each video frame must be an HWC NumPy array with 3 channels.")
+                frame = np.ascontiguousarray(frame)
+                t_frame = torch.from_numpy(frame).permute(2, 0, 1).to(torch.float32)
+                if frame.dtype == np.uint8:
+                    t_frame = t_frame / 255.0
                 tensor_frames.append(t_frame)
             # Stack into (T, C, H, W)
             video_tensor = torch.stack(tensor_frames, dim=0)
@@ -120,15 +126,21 @@ class VideoClipTransform(nn.Module):
         # Ensure float in [0.0, 1.0] if passed as uint8
         if video.dtype == torch.uint8:
             video = video.float() / 255.0
+        else:
+            video = video.float()
 
         if video.ndim == 4:
             # Shape: (T, C, H, W)
+            if video.shape[0] == 0 or video.shape[1] != 3:
+                raise ValueError("video must contain frames with exactly 3 channels.")
             return self._transform_sequence(video)
         elif video.ndim == 5:
             # Shape: (B, T, C, H, W)
             batch_size, num_frames, c, h, w = video.shape
+            if batch_size == 0 or num_frames == 0 or c != 3:
+                raise ValueError("video batch must have non-empty B/T dimensions and 3 channels.")
             # Fold batch and time into a single batch of images
-            folded = video.view(batch_size * num_frames, c, h, w)
+            folded = video.reshape(batch_size * num_frames, c, h, w)
             transformed = self.transform(folded)
             # Unfold back to (B, T, C, target_h, target_w)
             return transformed.view(batch_size, num_frames, c, self.image_size[0], self.image_size[1])

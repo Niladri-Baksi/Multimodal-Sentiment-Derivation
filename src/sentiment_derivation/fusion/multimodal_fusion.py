@@ -43,7 +43,9 @@ class MultimodalFusion(nn.Module):
         self.cross_modal_attention = nn.MultiheadAttention(
             embed_dim=feature_dim,
             num_heads=num_heads,
-            dropout=dropout,
+            # Keep returned attention probabilities normalized and interpretable.
+            # Feed-forward dropout still provides regularization.
+            dropout=0.0,
             batch_first=True,
         )
         self.attention_norm = nn.LayerNorm(feature_dim)
@@ -97,14 +99,20 @@ class MultimodalFusion(nn.Module):
                 "modality_mask must have shape [B, 3]; "
                 f"received {tuple(modality_mask.shape)}."
             )
-        if not bool(modality_mask[:, :2].all()):
-            raise ValueError("Video and audio must be available for every sample.")
+        if modality_mask.shape[0] == 0:
+            raise ValueError("Fusion batch dimension must be non-empty.")
+        if not bool(modality_mask.any(dim=1).all()):
+            raise ValueError("At least one modality must be available for every sample.")
+        if not bool(modality_mask[:, 0].all()):
+            raise ValueError("Video must be available for every sample.")
 
         features = [aligned.features[name] for name in MODALITY_ORDER]
         reference = features[0]
         if reference.ndim != 3:
             raise ValueError("Each aligned modality must have shape [B, T, D].")
         batch_size, steps, feature_dim = reference.shape
+        if batch_size == 0 or steps == 0:
+            raise ValueError("Aligned batch and sequence dimensions must be non-empty.")
         if feature_dim != self.feature_dim:
             raise ValueError(
                 f"Aligned feature dimension must be {self.feature_dim}; received {feature_dim}."
@@ -117,6 +125,10 @@ class MultimodalFusion(nn.Module):
                 )
             if value.device != reference.device or value.dtype != reference.dtype:
                 raise ValueError("All aligned features must share device and dtype.")
+            if not value.is_floating_point():
+                raise TypeError("Aligned features must have a floating-point dtype.")
+            if not bool(torch.isfinite(value).all()):
+                raise ValueError(f"{name} aligned features contain NaN or infinity.")
         if modality_mask.shape[0] != batch_size:
             raise ValueError(
                 f"modality_mask batch size must be {batch_size}; "
@@ -124,6 +136,10 @@ class MultimodalFusion(nn.Module):
             )
         if modality_mask.device != reference.device:
             raise ValueError("modality_mask must be on the feature device.")
+        if reference.device != self.fusion_query.device:
+            raise ValueError("Aligned features and fusion module must be on the same device.")
+        if reference.dtype != self.fusion_query.dtype:
+            raise ValueError("Aligned feature dtype must match fusion module parameter dtype.")
 
         # [B, T, M, D] -> [B*T, M, D]: attention is across modalities only.
         modality_tokens = torch.stack(features, dim=2).reshape(
