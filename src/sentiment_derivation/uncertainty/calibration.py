@@ -7,19 +7,68 @@ This module provides:
    scaling parameters T_k > 0 strictly on the validation set using binary cross-entropy (NLL).
 2. compute_multilabel_ece: Function calculating Expected Calibration Error (ECE) per emotion
    and overall macro-ECE.
-3. compute_reliability_curve: Computes binned accuracies and confidences for plotting
-   reliability diagrams (used in Explainable AI).
+The public metrics currently include per-label ECE and Brier score. The calibrator
+uses binary cross-entropy (Bernoulli negative log-likelihood) as its fitting loss.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
+
+
+def _validated_multilabel_arrays(
+    probs: Union[torch.Tensor, np.ndarray],
+    labels: Union[torch.Tensor, np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert and validate matching binary multi-label probability arrays."""
+    if isinstance(probs, torch.Tensor):
+        probs = probs.detach().cpu().to(dtype=torch.float64).numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().to(dtype=torch.float64).numpy()
+    probs_array = np.asarray(probs, dtype=np.float64)
+    labels_array = np.asarray(labels, dtype=np.float64)
+    if probs_array.ndim not in (1, 2, 3) or labels_array.ndim != probs_array.ndim:
+        raise ValueError("probs and labels must have matching rank 1, 2, or 3.")
+    if probs_array.shape != labels_array.shape:
+        raise ValueError(
+            f"probs and labels must have identical shapes; got {probs_array.shape} "
+            f"and {labels_array.shape}."
+        )
+    if probs_array.size == 0 or any(size == 0 for size in probs_array.shape):
+        raise ValueError("Calibration metrics require non-empty inputs.")
+    if not np.isfinite(probs_array).all() or not np.isfinite(labels_array).all():
+        raise ValueError("probs and labels must contain only finite values.")
+    if np.any((probs_array < 0.0) | (probs_array > 1.0)):
+        raise ValueError("probs values must lie in [0, 1].")
+    if np.any((labels_array != 0.0) & (labels_array != 1.0)):
+        raise ValueError("labels must be binary values in {0, 1}.")
+    if probs_array.ndim == 1:
+        probs_array = probs_array.reshape(-1, 1)
+        labels_array = labels_array.reshape(-1, 1)
+    elif probs_array.ndim == 3:
+        probs_array = probs_array.reshape(-1, probs_array.shape[-1])
+        labels_array = labels_array.reshape(-1, labels_array.shape[-1])
+    return probs_array, labels_array
+
+
+def _validated_emotion_names(
+    emotion_names: Optional[Sequence[str]], num_emotions: int
+) -> Sequence[str]:
+    if emotion_names is None:
+        return [f"emotion_{i}" for i in range(num_emotions)]
+    if len(emotion_names) != num_emotions:
+        raise ValueError(
+            f"Length of emotion_names ({len(emotion_names)}) must match "
+            f"num_emotions ({num_emotions})."
+        )
+    if len(set(emotion_names)) != len(emotion_names):
+        raise ValueError("emotion_names must be unique.")
+    return emotion_names
 
 
 @dataclass(frozen=True)
@@ -72,10 +121,19 @@ def compute_binary_ece(
     probs = np.asarray(probs, dtype=np.float64).flatten()
     labels = np.asarray(labels, dtype=np.float64).flatten()
 
+    if not isinstance(n_bins, int) or isinstance(n_bins, bool) or n_bins <= 0:
+        raise ValueError("n_bins must be a positive integer.")
+
     if len(probs) != len(labels):
         raise ValueError(f"probs ({len(probs)}) and labels ({len(labels)}) must have equal length.")
     if len(probs) == 0:
-        return 0.0, np.zeros(n_bins), np.zeros(n_bins), np.zeros(n_bins)
+        raise ValueError("ECE requires at least one sample.")
+    if not np.isfinite(probs).all() or not np.isfinite(labels).all():
+        raise ValueError("probs and labels must contain only finite values.")
+    if np.any((probs < 0.0) | (probs > 1.0)):
+        raise ValueError("probs values must lie in [0, 1].")
+    if np.any((labels != 0.0) & (labels != 1.0)):
+        raise ValueError("labels must be binary values in {0, 1}.")
 
     bin_boundaries = np.linspace(0.0, 1.0, n_bins + 1)
     bin_accs = np.zeros(n_bins, dtype=np.float64)
@@ -126,26 +184,10 @@ def compute_multilabel_ece(
         - "per_emotion_ece": dict of emotion_name -> ECE.
         - "curves": dict of emotion_name -> (bin_accs, bin_confs, bin_counts).
     """
-    if isinstance(probs, torch.Tensor):
-        probs = probs.detach().cpu().numpy()
-    if isinstance(labels, torch.Tensor):
-        labels = labels.detach().cpu().numpy()
-
-    # Flatten temporal dimension if 3D: [B, T, K] -> [B * T, K]
-    if probs.ndim == 3:
-        probs = probs.reshape(-1, probs.shape[-1])
-        labels = labels.reshape(-1, labels.shape[-1])
-    elif probs.ndim == 1:
-        probs = probs.reshape(-1, 1)
-        labels = labels.reshape(-1, 1)
+    probs, labels = _validated_multilabel_arrays(probs, labels)
 
     num_emotions = probs.shape[1]
-    if emotion_names is None:
-        emotion_names = [f"emotion_{i}" for i in range(num_emotions)]
-    elif len(emotion_names) != num_emotions:
-        raise ValueError(
-            f"Length of emotion_names ({len(emotion_names)}) does not match num_emotions ({num_emotions})."
-        )
+    emotion_names = _validated_emotion_names(emotion_names, num_emotions)
 
     per_emotion_ece: Dict[str, float] = {}
     curves: Dict[str, Dict[str, np.ndarray]] = {}
@@ -184,18 +226,10 @@ def compute_brier_score(
     Returns:
         Dictionary containing "macro_brier" and "per_emotion_brier".
     """
-    if isinstance(probs, torch.Tensor):
-        probs = probs.detach().cpu().numpy()
-    if isinstance(labels, torch.Tensor):
-        labels = labels.detach().cpu().numpy()
-
-    if probs.ndim == 3:
-        probs = probs.reshape(-1, probs.shape[-1])
-        labels = labels.reshape(-1, labels.shape[-1])
+    probs, labels = _validated_multilabel_arrays(probs, labels)
 
     num_emotions = probs.shape[1]
-    if emotion_names is None:
-        emotion_names = [f"emotion_{i}" for i in range(num_emotions)]
+    emotion_names = _validated_emotion_names(emotion_names, num_emotions)
 
     per_emotion_brier: Dict[str, float] = {}
     for k in range(num_emotions):
@@ -238,10 +272,10 @@ class MultiLabelTemperatureCalibrator(nn.Module):
             initial_temperature: Initial value for each temperature T_k (default 1.0).
         """
         super().__init__()
-        if num_emotions <= 0:
+        if not isinstance(num_emotions, int) or isinstance(num_emotions, bool) or num_emotions <= 0:
             raise ValueError("num_emotions must be a positive integer.")
-        if initial_temperature <= 0.0:
-            raise ValueError("initial_temperature must be strictly positive.")
+        if not np.isfinite(initial_temperature) or initial_temperature <= 0.0:
+            raise ValueError("initial_temperature must be finite and strictly positive.")
 
         self.num_emotions = num_emotions
         if emotion_names is None:
@@ -278,12 +312,24 @@ class MultiLabelTemperatureCalibrator(nn.Module):
         Returns:
             Calibrated logits shaped identically to input.
         """
+        if not isinstance(logits, torch.Tensor):
+            raise TypeError("logits must be a torch.Tensor.")
+        if logits.ndim not in (1, 2, 3):
+            raise ValueError("logits must have rank 1, 2, or 3.")
+        if any(size == 0 for size in logits.shape):
+            raise ValueError("logits dimensions must be non-empty.")
+        if not logits.is_floating_point():
+            raise TypeError("logits must use a floating-point dtype.")
+        if not bool(torch.isfinite(logits).all()):
+            raise ValueError("logits contain NaN or infinite values.")
         if logits.shape[-1] != self.num_emotions:
             raise ValueError(
                 f"Expected last dimension {self.num_emotions}; got {logits.shape[-1]}."
             )
         # Broadcast across batch and time dimensions: [..., num_emotions] / [num_emotions]
-        temps = self.temperatures.to(logits.device)
+        temps = self.temperatures.to(device=logits.device, dtype=logits.dtype)
+        if not bool(torch.isfinite(temps).all()) or bool(torch.any(temps <= 0)):
+            raise FloatingPointError("Calibration temperatures are non-finite or non-positive.")
         return logits / temps
 
     def forward(self, logits: torch.Tensor) -> torch.Tensor:
@@ -320,6 +366,25 @@ class MultiLabelTemperatureCalibrator(nn.Module):
         Returns:
             CalibrationMetrics summary containing ECE and Brier scores.
         """
+        if not isinstance(val_logits, torch.Tensor) or not isinstance(val_labels, torch.Tensor):
+            raise TypeError("val_logits and val_labels must be torch.Tensor objects.")
+        if val_logits.ndim not in (2, 3) or val_logits.shape != val_labels.shape:
+            raise ValueError("val_logits and val_labels must have matching [N,K] or [N,T,K] shapes.")
+        if any(size == 0 for size in val_logits.shape):
+            raise ValueError("Calibration fitting requires non-empty validation tensors.")
+        if val_logits.shape[-1] != self.num_emotions:
+            raise ValueError(f"Expected {self.num_emotions} emotion columns in validation tensors.")
+        if not val_logits.is_floating_point() or val_labels.is_complex():
+            raise TypeError("val_logits must be floating point and val_labels must be real numeric.")
+        if not bool(torch.isfinite(val_logits).all()) or not bool(torch.isfinite(val_labels).all()):
+            raise ValueError("Validation logits and labels must be finite.")
+        if bool(torch.any((val_labels != 0) & (val_labels != 1))):
+            raise ValueError("Calibration labels must be binary values in {0, 1}.")
+        if not np.isfinite(lr) or lr <= 0:
+            raise ValueError("lr must be finite and positive.")
+        if not isinstance(max_iter, int) or isinstance(max_iter, bool) or max_iter <= 0:
+            raise ValueError("max_iter must be a positive integer.")
+
         self.train()
         device = self.log_temperatures.device
 
@@ -350,6 +415,10 @@ class MultiLabelTemperatureCalibrator(nn.Module):
             return loss
 
         optimizer.step(closure)
+        if not bool(torch.isfinite(self.log_temperatures).all()):
+            raise FloatingPointError("Temperature fitting produced non-finite parameters.")
+        if not bool(torch.isfinite(self.temperatures).all()) or bool(torch.any(self.temperatures <= 0)):
+            raise FloatingPointError("Temperature fitting produced invalid temperatures.")
         self.eval()
 
         # Compute post-calibration metrics

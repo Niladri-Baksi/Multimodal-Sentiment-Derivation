@@ -15,6 +15,7 @@ This module provides:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
@@ -133,8 +134,10 @@ class EmotionClassifier(nn.Module):
             raise ValueError("All dimension arguments must be positive integers.")
         if not 0.0 <= dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1); got {dropout}.")
-        if temperature <= 0.0:
-            raise ValueError(f"temperature must be strictly positive; got {temperature}.")
+        if not math.isfinite(temperature) or temperature <= 0.0:
+            raise ValueError(
+                f"temperature must be finite and strictly positive; got {temperature}."
+            )
         if confidence_method not in ("margin", "entropy"):
             raise ValueError(
                 f"confidence_method must be 'margin' or 'entropy'; got '{confidence_method}'."
@@ -186,8 +189,8 @@ class EmotionClassifier(nn.Module):
         )
 
     @staticmethod
-    def _extract_tensor(features: FeatureInput) -> Tuple[torch.Tensor, bool]:
-        """Validate and extract feature tensor, tracking whether input was unbatched."""
+    def _extract_tensor(features: FeatureInput) -> Tuple[torch.Tensor, int]:
+        """Extract features and retain their original rank for output shaping."""
         if isinstance(features, Mapping):
             if "features" not in features:
                 raise ValueError(
@@ -203,11 +206,10 @@ class EmotionClassifier(nn.Module):
         if not features.is_floating_point():
             raise TypeError("Input features must have a floating-point dtype.")
 
-        is_unbatched = False
+        input_rank = features.ndim
         if features.ndim == 1:
             # Unbatched vector [D] -> [1, 1, D]
             features = features.unsqueeze(0).unsqueeze(0)
-            is_unbatched = True
         elif features.ndim == 2:
             # Batched vector [B, D] -> [B, 1, D]
             features = features.unsqueeze(1)
@@ -216,7 +218,11 @@ class EmotionClassifier(nn.Module):
                 f"Input features must have shape [B, T, D], [B, D], or [D]; got {tuple(features.shape)}."
             )
 
-        return features, is_unbatched
+        if features.shape[0] == 0 or features.shape[1] == 0:
+            raise ValueError("Input feature batch and sequence dimensions must be non-empty.")
+        if not bool(torch.isfinite(features).all()):
+            raise ValueError("Input features contain NaN or infinite values.")
+        return features, input_rank
 
     def _estimate_confidence_and_uncertainty(
         self, probabilities: torch.Tensor
@@ -264,13 +270,20 @@ class EmotionClassifier(nn.Module):
             EmotionOutput containing multi-label logits, probabilities, per-emotion
             confidence, per-emotion uncertainty, emotion embeddings, and context embeddings.
         """
-        tensor, is_unbatched = self._extract_tensor(features)
+        tensor, input_rank = self._extract_tensor(features)
         batch_size, steps, dim = tensor.shape
 
         if dim != self.input_dim:
             raise ValueError(
                 f"Expected input feature dimension {self.input_dim}; got {dim}."
             )
+        parameter = next(self.parameters())
+        if tensor.device != parameter.device:
+            raise ValueError(
+                f"Input features are on {tensor.device}; classifier is on {parameter.device}."
+            )
+        if tensor.dtype != parameter.dtype:
+            tensor = tensor.to(dtype=parameter.dtype)
 
         # 1. Parallel Representation: Emotion Branch and Context Branch
         emotion_emb = self.emotion_branch(tensor)
@@ -285,16 +298,27 @@ class EmotionClassifier(nn.Module):
 
         # 4. Independent Emotion-wise Confidence and Uncertainty
         confidence, uncertainty = self._estimate_confidence_and_uncertainty(probabilities)
+        outputs_to_check = (
+            logits,
+            probabilities,
+            confidence,
+            uncertainty,
+            emotion_emb,
+            context_emb,
+        )
+        if any(not bool(torch.isfinite(value).all()) for value in outputs_to_check):
+            raise FloatingPointError("EmotionClassifier produced non-finite outputs.")
 
-        # Squeeze temporal dimension if input was [B, D] or [D]
-        if steps == 1 and not is_unbatched:
+        # Squeeze only dimensions implied by vector inputs. A 3D [B, 1, D]
+        # input is still a one-step sequence and retains its temporal axis.
+        if input_rank == 2:
             logits = logits.squeeze(1)
             probabilities = probabilities.squeeze(1)
             confidence = confidence.squeeze(1)
             uncertainty = uncertainty.squeeze(1)
             emotion_emb = emotion_emb.squeeze(1)
             context_emb = context_emb.squeeze(1)
-        elif is_unbatched:
+        elif input_rank == 1:
             logits = logits.squeeze(0).squeeze(0)
             probabilities = probabilities.squeeze(0).squeeze(0)
             confidence = confidence.squeeze(0).squeeze(0)
@@ -327,7 +351,7 @@ class EmotionClassifier(nn.Module):
             dropout=cfg.get("dropout", 0.1),
             temperature=cfg.get("temperature", 1.0),
             confidence_method=cfg.get("confidence_method", "margin"),
-            emotion_names=cfg.get("emotion_names", DEFAULT_EMOTION_NAMES),
+            emotion_names=cfg.get("emotion_names"),
         )
 
 

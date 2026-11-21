@@ -216,3 +216,125 @@ def test_uncertainty_gate_ablation_bypass():
     assert torch.allclose(out.gated_features, features)
     # Gate weights must be identity (ones)
     assert torch.all(out.gate_weights == 1.0)
+
+
+@pytest.mark.parametrize(
+    "bad,exception,match",
+    [
+        (torch.empty(0, 8), ValueError, "non-empty"),
+        (torch.ones(2, 7), ValueError, "last dimension"),
+        (torch.ones(2, 8, dtype=torch.long), TypeError, "floating-point"),
+        (torch.full((2, 8), float("nan")), ValueError, "finite"),
+        (torch.full((2, 8), 1.1), ValueError, "\\[0, 1\\]"),
+        (torch.empty(1, 2, 3, 8, 1), ValueError, "rank"),
+    ],
+)
+def test_uncertainty_estimator_rejects_invalid_probability_contract(bad, exception, match):
+    with pytest.raises(exception, match=match):
+        UncertaintyEstimator()(bad)
+
+
+def test_uncertainty_estimator_requires_callback_for_mc_dropout():
+    estimator = UncertaintyEstimator(method="mc_dropout", mc_samples=3)
+    with pytest.raises(ValueError, match="model_fn is required"):
+        estimator(torch.full((1, 8), 0.5))
+
+
+def test_mc_dropout_uncertainty_formula_and_sample_contract():
+    estimator = UncertaintyEstimator(method="mc_dropout", num_emotions=2, mc_samples=2)
+    samples = iter((torch.tensor([[0.25, 0.25]]), torch.tensor([[0.75, 0.75]])))
+    out = estimator(torch.full((1, 2), 0.5), model_fn=lambda: next(samples))
+    binary_entropy = -(0.25 * np.log2(0.25) + 0.75 * np.log2(0.75))
+    expected_epistemic = torch.tensor([[0.25, 0.25]])
+    expected_total = (expected_epistemic + binary_entropy) / 2.0
+    assert out.method == "mc_dropout"
+    assert torch.allclose(out.epistemic_uncertainty, expected_epistemic)
+    assert torch.allclose(out.aleatoric_uncertainty, torch.full((1, 2), binary_entropy))
+    assert torch.allclose(out.uncertainty, expected_total)
+    assert torch.allclose(out.confidence, 1.0 - expected_total)
+
+
+def test_ece_rejects_invalid_values_and_empty_input():
+    with pytest.raises(ValueError, match="at least one sample"):
+        compute_binary_ece(np.array([]), np.array([]))
+    with pytest.raises(ValueError, match="n_bins"):
+        compute_binary_ece(np.array([0.5]), np.array([1]), n_bins=0)
+    with pytest.raises(ValueError, match="binary"):
+        compute_binary_ece(np.array([0.5]), np.array([0.5]))
+    with pytest.raises(ValueError, match="\\[0, 1\\]"):
+        compute_binary_ece(np.array([1.5]), np.array([1]))
+
+
+def test_multilabel_metrics_known_values_and_shape_contract():
+    probabilities = np.array([[0.2, 0.8], [0.8, 0.2]])
+    labels = np.array([[0, 1], [1, 0]])
+    ece = compute_multilabel_ece(probabilities, labels, n_bins=2)
+    brier = compute_brier_score(probabilities, labels)
+    assert ece["macro_ece"] == pytest.approx(0.2)
+    assert brier["macro_brier"] == pytest.approx(0.04)
+    with pytest.raises(ValueError, match="identical shapes"):
+        compute_multilabel_ece(probabilities, labels[:, :1])
+    with pytest.raises(ValueError, match="non-empty"):
+        compute_brier_score(np.empty((0, 2)), np.empty((0, 2)))
+    with pytest.raises(ValueError, match="binary"):
+        compute_brier_score(probabilities, np.full(labels.shape, 0.5))
+
+
+def test_calibrator_round_trip_and_invalid_validation_data():
+    source = MultiLabelTemperatureCalibrator(num_emotions=2)
+    with torch.no_grad():
+        source.log_temperatures.copy_(torch.tensor([0.2, -0.3]))
+    restored = MultiLabelTemperatureCalibrator(num_emotions=2)
+    restored.load_state_dict(source.state_dict())
+    assert torch.allclose(restored.temperatures, source.temperatures)
+    with pytest.raises(ValueError, match="non-empty"):
+        source.fit(torch.empty(0, 2), torch.empty(0, 2))
+    with pytest.raises(ValueError, match="binary"):
+        source.fit(torch.zeros(3, 2), torch.full((3, 2), 0.5))
+
+
+def test_gate_exact_residual_formula_and_saliency():
+    gate = UncertaintyAwareGate(feature_dim=4, num_emotions=2, hidden_dim=3, dropout=0.0)
+    gate.eval()
+    with torch.no_grad():
+        for parameter in gate.gate_mlp.parameters():
+            parameter.zero_()
+    features = torch.arange(8.0).reshape(2, 1, 4)
+    probabilities = torch.full((2, 1, 2), 0.5)
+    uncertainty = torch.full((2, 1, 2), 0.5)
+    valence_confidence = torch.full((2, 1, 1), 0.5)
+    out = gate(features, probabilities, uncertainty, valence_confidence)
+    assert torch.allclose(out.gate_weights, torch.full_like(features, 0.5))
+    assert torch.allclose(out.gated_features, features * 0.5)
+    assert torch.allclose(out.temporal_saliency, torch.full((2, 1, 1), 0.5))
+
+
+def test_gate_handles_saturation_and_rejects_invalid_inputs():
+    gate = UncertaintyAwareGate(feature_dim=4, num_emotions=2, hidden_dim=3, dropout=0.0)
+    features = torch.ones(1, 2, 4)
+    probabilities = torch.full((1, 2, 2), 0.5)
+    uncertainty = torch.full((1, 2, 2), 0.5)
+    with torch.no_grad():
+        gate.gate_mlp[-2].weight.zero_()
+        gate.gate_mlp[-2].bias.fill_(-100.0)
+    suppressed = gate(features, probabilities, uncertainty)
+    assert torch.equal(suppressed.gate_weights, torch.zeros_like(features))
+    assert torch.equal(suppressed.gated_features, torch.zeros_like(features))
+    with pytest.raises(ValueError, match="shape"):
+        gate(features, torch.ones(1, 2, 3), uncertainty)
+    with pytest.raises(ValueError, match="finite"):
+        gate(features * float("nan"), probabilities, uncertainty)
+    with pytest.raises(ValueError, match="\\[0, 1\\]"):
+        gate(features, probabilities, torch.full_like(uncertainty, 2.0))
+
+
+def test_gate_rejects_empty_sequence_and_preserves_dtype_contract():
+    gate = UncertaintyAwareGate(feature_dim=4, num_emotions=2, dropout=0.0)
+    with pytest.raises(ValueError, match="non-empty"):
+        gate(torch.empty(2, 0, 4), torch.empty(2, 0, 2), torch.empty(2, 0, 2))
+    out = gate(
+        torch.ones(2, 3, 4, dtype=torch.float64),
+        torch.full((2, 3, 2), 0.5, dtype=torch.float64),
+        torch.full((2, 3, 2), 0.5, dtype=torch.float64),
+    )
+    assert out.gated_features.dtype == torch.float32

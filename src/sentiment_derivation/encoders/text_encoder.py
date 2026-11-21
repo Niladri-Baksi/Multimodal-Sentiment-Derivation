@@ -23,6 +23,8 @@ class TextPreprocessor:
         model_name: str = "distilbert-base-uncased",
         max_length: int = 48,
     ):
+        if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= 0:
+            raise ValueError("max_length must be a positive integer.")
         self.model_name = model_name
         self.max_length = max_length
         self.tokenizer = DistilBertTokenizer.from_pretrained(model_name)
@@ -31,8 +33,12 @@ class TextPreprocessor:
         """
         Tokenizes a single text string into input_ids and attention_mask tensors.
         """
+        if not isinstance(text, str):
+            raise TypeError("text must be a string.")
+        if not text.strip():
+            raise ValueError("text must contain at least one non-whitespace character.")
         encoded = self.tokenizer(
-            str(text),
+            text,
             padding="max_length",
             truncation=True,
             max_length=self.max_length,
@@ -61,6 +67,10 @@ class TextEncoder(nn.Module):
         freeze_backbone: bool = True,
     ):
         super(TextEncoder, self).__init__()
+        if not isinstance(target_steps, int) or target_steps <= 0:
+            raise ValueError("target_steps must be a positive integer.")
+        if not isinstance(feature_dim, int) or feature_dim <= 0:
+            raise ValueError("feature_dim must be a positive integer.")
         self.target_steps = target_steps
         self.feature_dim = feature_dim
 
@@ -71,9 +81,10 @@ class TextEncoder(nn.Module):
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
-        # Projection: 768 -> feature_dim (128)
+        # DistilBERT's hidden width is configurable across model variants.
+        hidden_dim = getattr(getattr(self.backbone, "config", None), "dim", 768)
         self.proj = nn.Sequential(
-            nn.Linear(768, feature_dim),
+            nn.Linear(hidden_dim, feature_dim),
             nn.LayerNorm(feature_dim),
             nn.ReLU(),
         )
@@ -96,15 +107,53 @@ class TextEncoder(nn.Module):
         Returns:
             Tensor of shape [B, 16, 128] or dict {"features": [B, 16, 128]}
         """
-        # Backbone forward pass: [B, seq_len, 768]
+        if not isinstance(input_ids, torch.Tensor) or not isinstance(attention_mask, torch.Tensor):
+            raise TypeError("input_ids and attention_mask must be torch.Tensor objects.")
+        if input_ids.ndim != 2 or attention_mask.ndim != 2:
+            raise ValueError("input_ids and attention_mask must both have shape [B, L].")
+        if input_ids.shape != attention_mask.shape:
+            raise ValueError("input_ids and attention_mask must have matching shapes.")
+        if input_ids.shape[0] <= 0 or input_ids.shape[1] <= 0:
+            raise ValueError("Text encoder batch and sequence dimensions must be non-empty.")
+        if input_ids.dtype not in (torch.int32, torch.int64):
+            raise TypeError("input_ids must use an integer dtype (int32 or int64).")
+        if attention_mask.dtype not in (torch.bool, torch.int32, torch.int64):
+            raise TypeError("attention_mask must use a boolean or integer dtype.")
+        if input_ids.device != attention_mask.device:
+            raise ValueError("input_ids and attention_mask must be on the same device.")
+        if torch.any(input_ids < 0):
+            raise ValueError("input_ids must contain non-negative token IDs.")
+        vocab_size = getattr(getattr(self.backbone, "config", None), "vocab_size", None)
+        if vocab_size is not None and torch.any(input_ids >= vocab_size):
+            raise ValueError(f"input_ids contain a token ID outside vocabulary size {vocab_size}.")
+        if torch.any((attention_mask != 0) & (attention_mask != 1)):
+            raise ValueError("attention_mask values must be binary (0 or 1).")
+        parameter = next(self.backbone.parameters(), None)
+        if parameter is not None and input_ids.device != parameter.device:
+            raise ValueError(
+                f"Text inputs are on {input_ids.device}; encoder is on {parameter.device}."
+            )
+
+        # Backbone forward pass: [B, seq_len, H]
         outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         hidden_states = outputs.last_hidden_state
+        if (
+            not isinstance(hidden_states, torch.Tensor)
+            or hidden_states.ndim != 3
+            or hidden_states.shape[:2] != input_ids.shape
+        ):
+            raise ValueError("Text backbone must return hidden states shaped [B, L, H].")
 
         # Project 768 -> 128: [B, seq_len, 128]
         proj_features = self.proj(hidden_states)
 
         # Temporal pooling to target_steps: [B, 128, seq_len] -> [B, 128, 16] -> [B, 16, 128]
-        aligned = self.temporal_pool(proj_features.transpose(1, 2)).transpose(1, 2)
+        mask = attention_mask.to(dtype=proj_features.dtype).unsqueeze(-1)
+        weighted_features = proj_features * mask
+        pooled_sum = self.temporal_pool(weighted_features.transpose(1, 2))
+        pooled_weight = self.temporal_pool(mask.transpose(1, 2))
+        aligned = (pooled_sum / pooled_weight.clamp_min(1e-8)).transpose(1, 2)
+        aligned = aligned.masked_fill(pooled_weight.transpose(1, 2) == 0, 0.0)
 
         if return_dict:
             return {"features": aligned}

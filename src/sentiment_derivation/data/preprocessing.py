@@ -13,17 +13,54 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
+import tempfile
+import wave
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - depends on the local runtime environment
+    cv2 = None  # type: ignore[assignment]
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)
+
+
+
+def _wav_is_usable(path: Path, sample_rate: int, channels: int) -> bool:
+    """Check that a WAV contains complete, readable audio frames."""
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            frame_count = wav_file.getnframes()
+
+            if (
+                frame_count <= 0
+                or wav_file.getframerate() != sample_rate
+                or wav_file.getnchannels() != channels
+                or wav_file.getcomptype() != "NONE"
+            ):
+                return False
+
+            expected_bytes = (
+                frame_count
+                * wav_file.getnchannels()
+                * wav_file.getsampwidth()
+            )
+
+            audio_data = wav_file.readframes(frame_count)
+
+            return len(audio_data) == expected_bytes
+
+    except (EOFError, OSError, wave.Error):
+        return False
+
 
 # Canonical EmoReact emotion labels (ordered strictly by column index 0..7)
 DEFAULT_EMOTION_NAMES: List[str] = [
@@ -36,6 +73,193 @@ DEFAULT_EMOTION_NAMES: List[str] = [
     "Fear",          # Col 6
     "Frustration",   # Col 7
 ]
+
+_ANNOTATION_VIDEO_ASSOCIATION_METHOD = "sorted_video_stem_position"
+_UNKNOWN_ANNOTATION_VIDEO_ASSOCIATION = {
+    "method": "unknown",
+    "verification_status": "unverified",
+    "evidence": None,
+}
+
+
+def _normalize_recorded_annotation_video_association(
+    value: Any, *, context: str
+) -> Dict[str, Any]:
+    """Validate provenance already recorded in a manifest.
+
+    An omitted policy is handled by the caller as legacy unknown provenance.
+    An explicitly present empty or partial mapping is malformed. Independent
+    ``verified`` status is never a valid recorded value; preprocessing can only
+    record a caller declaration as ``caller_declared_verified``.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{context} annotation/video provenance must be a mapping.")
+    if not value:
+        raise ValueError(
+            f"{context} annotation/video provenance cannot be empty; omit it only "
+            "for a legacy manifest."
+        )
+
+    required_keys = {"method", "verification_status", "evidence"}
+    unknown_keys = set(value) - required_keys
+    missing_keys = required_keys - set(value)
+    if unknown_keys or missing_keys:
+        details = []
+        if missing_keys:
+            details.append(f"missing fields {sorted(missing_keys)}")
+        if unknown_keys:
+            details.append(f"unsupported fields {sorted(map(str, unknown_keys))}")
+        raise ValueError(
+            f"{context} annotation/video provenance has " + " and ".join(details) + "."
+        )
+
+    method = value["method"]
+    status = value["verification_status"]
+    evidence = value["evidence"]
+    if not isinstance(method, str) or method not in {
+        "unknown",
+        _ANNOTATION_VIDEO_ASSOCIATION_METHOD,
+    }:
+        raise ValueError(f"{context} annotation/video provenance has an unsupported method.")
+    if not isinstance(status, str) or status not in {
+        "unverified",
+        "caller_declared_verified",
+    }:
+        raise ValueError(
+            f"{context} annotation/video provenance status must be 'unverified' or "
+            "'caller_declared_verified'; independent verification is not accepted."
+        )
+    if evidence is not None and (
+        not isinstance(evidence, str) or not evidence.strip()
+    ):
+        raise ValueError(
+            f"{context} annotation/video provenance evidence must be a non-empty string."
+        )
+    if status == "caller_declared_verified" and evidence is None:
+        raise ValueError(
+            f"{context} caller-declared verification requires a non-empty evidence reference."
+        )
+    return {
+        "method": method,
+        "verification_status": status,
+        "evidence": evidence,
+    }
+
+
+def _normalize_manifest_association_provenance(
+    manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Validate manifest structure and normalize association provenance.
+
+    Missing provenance is the sole legacy exception: the manifest defaults to
+    unknown/unverified and samples without an explicit policy inherit that
+    manifest policy. Every split and record must still have a valid structure.
+    Explicit sample provenance takes precedence over the manifest policy.
+    """
+    if not isinstance(manifest, Mapping):
+        raise ValueError("Manifest JSON root must be an object.")
+
+    samples_by_split = manifest.get("samples")
+    if not isinstance(samples_by_split, Mapping):
+        raise ValueError("Manifest 'samples' must be an object mapping splits to lists.")
+
+    manifest_policy = (
+        _normalize_recorded_annotation_video_association(
+            manifest["annotation_video_association"], context="Manifest-level"
+        )
+        if "annotation_video_association" in manifest
+        else dict(_UNKNOWN_ANNOTATION_VIDEO_ASSOCIATION)
+    )
+
+    normalized_splits: Dict[str, List[Dict[str, Any]]] = {}
+    for split_name, records in samples_by_split.items():
+        if not isinstance(split_name, str) or not split_name.strip():
+            raise ValueError("Manifest split names must be non-empty strings.")
+        if not isinstance(records, list):
+            raise ValueError(
+                f"Manifest split {split_name!r} must contain a list of records."
+            )
+        normalized_records: List[Dict[str, Any]] = []
+        for index, record in enumerate(records):
+            context = f"Sample {index} in split {split_name!r}"
+            if not isinstance(record, Mapping):
+                raise ValueError(f"{context} record must be an object.")
+            normalized_record = dict(record)
+            if "annotation_video_association" in record:
+                normalized_record["annotation_video_association"] = (
+                    _normalize_recorded_annotation_video_association(
+                        record["annotation_video_association"], context=context
+                    )
+                )
+            else:
+                normalized_record["annotation_video_association"] = dict(
+                    manifest_policy
+                )
+            normalized_records.append(normalized_record)
+
+        normalized_splits[split_name] = normalized_records
+
+    normalized_manifest = dict(manifest)
+    normalized_manifest["annotation_video_association"] = manifest_policy
+    normalized_manifest["samples"] = normalized_splits
+    return normalized_manifest
+
+
+def _normalize_annotation_video_association_policy(
+    association_policy: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Validate and normalize caller-supplied annotation/video provenance.
+
+    The function records an explicit caller attestation; it cannot independently
+    prove that a dataset's annotation row order matches its video filename order.
+    """
+    if association_policy is None:
+        association_policy = {}
+    if not isinstance(association_policy, Mapping):
+        raise TypeError("association_policy must be a mapping when provided.")
+
+    allowed_keys = {"method", "verification_status", "evidence"}
+    unknown_keys = [key for key in association_policy if key not in allowed_keys]
+    if unknown_keys:
+        raise ValueError(
+            "association_policy contains unsupported keys: "
+            f"{sorted((repr(key) for key in unknown_keys))}."
+        )
+
+    method = association_policy.get("method", _ANNOTATION_VIDEO_ASSOCIATION_METHOD)
+    if method != _ANNOTATION_VIDEO_ASSOCIATION_METHOD:
+        raise ValueError(
+            "Only the implemented association method "
+            f"'{_ANNOTATION_VIDEO_ASSOCIATION_METHOD}' is supported."
+        )
+
+    status = association_policy.get("verification_status", "unverified")
+    if not isinstance(status, str) or status not in {"unverified", "verified"}:
+        raise ValueError(
+            "association_policy.verification_status must be 'unverified' or 'verified'."
+        )
+
+    evidence = association_policy.get("evidence")
+    if evidence is not None and (
+        not isinstance(evidence, str) or not evidence.strip()
+    ):
+        raise ValueError(
+            "association_policy.evidence must be a non-empty string when provided."
+        )
+    if status == "verified" and evidence is None:
+        raise ValueError(
+            "A verified association policy requires a non-empty evidence reference."
+        )
+
+    # Do not label a caller assertion as independently verified by this code.
+    recorded_status = (
+        "caller_declared_verified" if status == "verified" else "unverified"
+    )
+    return {
+        "method": _ANNOTATION_VIDEO_ASSOCIATION_METHOD,
+        "verification_status": recorded_status,
+        "evidence": evidence,
+    }
 
 
 def load_annotations(
@@ -76,7 +300,8 @@ def load_annotations(
             if not line:
                 continue
 
-            parts = [p.strip() for p in line.split(",") if p.strip()]
+            # Preserve empty cells so malformed rows cannot shift columns.
+            parts = [p.strip() for p in line.split(",")]
             if len(parts) != expected_emotions_count + 1:
                 raise ValueError(
                     f"Line {line_num} in '{path.name}' has {len(parts)} columns, "
@@ -96,6 +321,11 @@ def load_annotations(
 
                 # Parse continuous valence
                 valence = float(parts[expected_emotions_count])
+                if not math.isfinite(valence) or not 1.0 <= valence <= 7.0:
+                    raise ValueError(
+                        f"Line {line_num}, valence must be finite and within [1, 7]; "
+                        f"got {valence}."
+                    )
             except ValueError as e:
                 raise ValueError(
                     f"Failed parsing numerical values on line {line_num} of '{path.name}': {e}"
@@ -128,11 +358,16 @@ def get_split_sample_ids(video_dir: Union[str, Path]) -> List[str]:
     if not dir_path.is_dir():
         raise FileNotFoundError(f"Video directory not found at: {dir_path}")
 
-    # Standard ASCII sorting guarantees deterministic alignment with labels
+    # Sorting gives deterministic positional pairing; it does not verify that
+    # the annotation rows use this same ordering.
     video_files = sorted([
         f.stem for f in dir_path.iterdir()
         if f.is_file() and f.suffix.lower() == ".mp4"
     ])
+    if len(video_files) != len(set(video_files)):
+        raise ValueError(
+            f"Video directory contains duplicate sample IDs (case-sensitive stems): {dir_path}"
+        )
 
     return video_files
 
@@ -140,27 +375,48 @@ def get_split_sample_ids(video_dir: Union[str, Path]) -> List[str]:
 def match_annotations_with_media(
     sample_ids: List[str],
     annotations: List[Dict[str, Any]],
+    *,
+    association_policy: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Align sample IDs with their corresponding annotation records.
+    """Pair annotation rows with video IDs by sorted position.
 
-    In EmoReact, annotation files contain one row per video ordered
-    alphabetically by clip filename.
+    Annotation rows do not contain IDs, so this positional operation cannot
+    establish identity by itself. Each returned record carries provenance
+    metadata. By default it is explicitly marked unverified. A caller may
+    supply a policy with a verification evidence reference; that is recorded
+    as a caller declaration and is not independently checked here.
 
     Args:
-        sample_ids: List of sample IDs (sorted video stems).
+        sample_ids: Video filename stems in the intended pairing order.
         annotations: List of annotation dictionaries loaded from label file.
+        association_policy: Optional mapping with ``method`` equal to
+            ``sorted_video_stem_position``, ``verification_status`` equal to
+            ``unverified`` (default) or ``verified``, and an evidence reference
+            required for ``verified``. A verified caller policy is recorded as
+            ``caller_declared_verified`` to avoid implying independent proof.
 
     Returns:
         List of combined sample dictionaries.
 
     Raises:
-        ValueError: If the number of sample IDs does not match annotations.
+        ValueError: If IDs are missing/invalid/duplicated, counts differ, or the
+            association policy is malformed.
     """
+    normalized_policy = _normalize_annotation_video_association_policy(
+        association_policy
+    )
+    for index, sample_id in enumerate(sample_ids):
+        if not isinstance(sample_id, str) or not sample_id.strip():
+            raise ValueError(
+                f"Video sample ID at position {index} must be a non-empty string."
+            )
     if len(sample_ids) != len(annotations):
         raise ValueError(
             f"Count mismatch: {len(sample_ids)} sample IDs vs "
             f"{len(annotations)} annotation rows."
         )
+    if len(sample_ids) != len(set(sample_ids)):
+        raise ValueError("sample_ids must be unique to avoid ambiguous annotation matching.")
 
     matched: List[Dict[str, Any]] = []
     for sample_id, ann in zip(sample_ids, annotations):
@@ -168,75 +424,115 @@ def match_annotations_with_media(
             "sample_id": sample_id,
             "emotion_labels": ann["emotion_labels"],
             "valence": ann["valence"],
+            "annotation_video_association": dict(normalized_policy),
         }
         matched.append(item)
 
     return matched
 
 
+
 def inspect_media_file(video_path: Union[str, Path]) -> Dict[str, Any]:
-    """Inspect a video file and extract basic metadata and readability status.
+    """Inspect video metadata and verify that at least one frame is readable."""
 
-    Args:
-        video_path: Path to the MP4 video file.
-
-    Returns:
-        Dictionary with validity flag and video metadata:
-        - valid (bool): True if video opens and has > 0 frames.
-        - width (int)
-        - height (int)
-        - fps (float)
-        - frame_count (int)
-        - duration_seconds (float)
-        - file_size_bytes (int)
-        - error (Optional[str])
-    """
     path = Path(video_path)
+
+    result = {
+        "valid": False,
+        "width": 0,
+        "height": 0,
+        "fps": 0.0,
+        "frame_count": 0,
+        "duration_seconds": 0.0,
+        "file_size_bytes": 0,
+        "error": None,
+    }
+
     if not path.is_file():
-        return {
-            "valid": False,
-            "error": f"File does not exist: {path}",
-            "width": 0,
-            "height": 0,
-            "fps": 0.0,
-            "frame_count": 0,
-            "duration_seconds": 0.0,
-            "file_size_bytes": 0,
-        }
+        result["error"] = f"File does not exist: {path}"
+        return result
 
     file_size = path.stat().st_size
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        return {
-            "valid": False,
-            "error": "Failed to open video with OpenCV",
-            "width": 0,
-            "height": 0,
-            "fps": 0.0,
-            "frame_count": 0,
-            "duration_seconds": 0.0,
-            "file_size_bytes": file_size,
-        }
+    result["file_size_bytes"] = file_size
 
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = float(cap.get(cv2.CAP_PROP_FPS))
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    if cv2 is None:
+        result["error"] = (
+            "OpenCV is unavailable; video readability could not be inspected"
+        )
+        return result
 
-    duration = frame_count / fps if fps > 0 else 0.0
-    valid = frame_count > 0 and width > 0 and height > 0
+    cap = None
 
-    return {
-        "valid": valid,
-        "width": width,
-        "height": height,
-        "fps": round(fps, 3),
-        "frame_count": frame_count,
-        "duration_seconds": round(duration, 3),
-        "file_size_bytes": file_size,
-        "error": None if valid else "Video has zero frames or invalid dimensions",
-    }
+    try:
+        cap = cv2.VideoCapture(str(path))
+
+        if not cap.isOpened():
+            result["error"] = "Failed to open video with OpenCV"
+            return result
+
+        width_value = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height_value = float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        frame_count_value = float(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Reject invalid or non-finite metadata.
+        if not all(
+            math.isfinite(value)
+            for value in (
+                width_value,
+                height_value,
+                fps,
+                frame_count_value,
+            )
+        ):
+            result["error"] = "Video contains non-finite decoder metadata"
+            return result
+
+        width = int(width_value)
+        height = int(height_value)
+        frame_count = int(frame_count_value)
+
+        if width <= 0 or height <= 0 or fps <= 0 or frame_count <= 0:
+            result["error"] = "Video contains invalid dimensions, FPS, or frame count"
+            return result
+
+        # Metadata alone does not prove that the video is readable.
+        # Attempt to decode at least one actual frame.
+        frame_read, frame = cap.read()
+
+        if not frame_read or frame is None:
+            result["error"] = "Video decoder could not read a frame"
+            return result
+
+        duration = frame_count / fps
+
+        result.update({
+            "valid": True,
+            "width": width,
+            "height": height,
+            "fps": round(fps, 3),
+            "frame_count": frame_count,
+            "duration_seconds": round(duration, 3),
+            "error": None,
+        })
+
+        return result
+
+    except Exception as exc:
+        result["error"] = f"Video inspection failed: {exc}"
+        return result
+
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                logger.warning(
+                    "Could not release video capture for '%s'.",
+                    path,
+                    exc_info=True,
+                )
+
 
 
 def extract_audio_from_video(
@@ -264,6 +560,15 @@ def extract_audio_from_video(
     if not v_path.is_file():
         logger.error(f"Cannot extract audio: video file missing: {v_path}")
         return False
+    if (
+        isinstance(target_sample_rate, bool)
+        or not isinstance(target_sample_rate, int)
+        or target_sample_rate <= 0
+        or isinstance(channels, bool)
+        or not isinstance(channels, int)
+        or channels <= 0
+    ):
+        raise ValueError("target_sample_rate and channels must be positive integers.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -286,14 +591,22 @@ def extract_audio_from_video(
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if res.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
+        if res.returncode == 0 and _wav_is_usable(out_path, target_sample_rate, channels):
             return True
         logger.warning(
             f"FFmpeg audio extraction failed for '{v_path.name}': {res.stderr}"
         )
+        if out_path.exists():
+            out_path.unlink()
         return False
     except Exception as e:
         logger.error(f"Exception during FFmpeg execution for '{v_path.name}': {e}")
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            logger.warning(
+                f"Could not remove partial audio output '{out_path}': {cleanup_error}"
+            )
         return False
 
 
@@ -310,31 +623,35 @@ def extract_sample_frames(
     Returns:
         List of RGB image arrays of shape (H, W, 3) as uint8.
     """
+    if isinstance(num_frames, bool) or not isinstance(num_frames, int) or num_frames <= 0:
+        raise ValueError("num_frames must be a positive integer.")
     v_path = Path(video_path)
-    if not v_path.is_file() or num_frames <= 0:
+    if not v_path.is_file():
         return []
+    if cv2 is None:
+        raise ImportError("OpenCV is required to decode video frames.")
 
     cap = cv2.VideoCapture(str(v_path))
     if not cap.isOpened():
-        return []
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames <= 0:
         cap.release()
         return []
 
-    indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-    frames: List[np.ndarray] = []
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            return []
 
-    for frame_idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-        ret, frame_bgr = cap.read()
-        if ret and frame_bgr is not None:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            frames.append(frame_rgb)
-
-    cap.release()
-    return frames
+        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+        frames: List[np.ndarray] = []
+        for frame_idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+            ret, frame_bgr = cap.read()
+            if ret and frame_bgr is not None:
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                frames.append(frame_rgb)
+        return frames
+    finally:
+        cap.release()
 
 
 def verify_visual_features(
@@ -392,6 +709,7 @@ def build_standardized_sample(
     text: Optional[str] = None,
     visual_features: Optional[Dict[str, Any]] = None,
     media_metadata: Optional[Dict[str, Any]] = None,
+    video_frame_paths: Optional[List[Union[str, Path]]] = None,
 ) -> Dict[str, Any]:
     """Construct a canonical, standardized sample dictionary.
 
@@ -417,14 +735,18 @@ def build_standardized_sample(
 
     # Check existence on disk
     video_exists = bool(v_path_str and Path(v_path_str).is_file())
-    audio_exists = bool(a_path_str and Path(a_path_str).is_file())
+    audio_file = Path(a_path_str) if a_path_str else None
+    audio_exists = bool(audio_file and audio_file.is_file() and audio_file.stat().st_size > 0)
     text_exists = bool(text is not None and len(text.strip()) > 0)
     feat_available = bool(visual_features and visual_features.get("available", False))
+    video_valid = bool(media_metadata.get("valid", True)) if media_metadata else True
+    frame_paths = [str(path) for path in (video_frame_paths or [])]
 
     sample_dict: Dict[str, Any] = {
         "sample_id": sample_id,
         "split": split,
         "video_path": v_path_str,
+        "video_frame_paths": frame_paths,
         "audio_path": a_path_str,
         "text": text,
         "emotion_labels": dict(emotion_labels),
@@ -432,7 +754,8 @@ def build_standardized_sample(
             "valence": float(valence),
         },
         "modality_availability": {
-            "video": video_exists,
+            "video": video_exists and video_valid,
+            "video_frames": bool(frame_paths),
             "audio": audio_exists,
             "text": text_exists,
             "visual_features": feat_available,
@@ -460,6 +783,9 @@ def build_processed_manifest(
     output_frames_dir: Optional[Union[str, Path]] = None,
     num_frames: int = 16,
     emotion_names: Optional[List[str]] = None,
+    target_sample_rate: int = 16000,
+    audio_channels: int = 1,
+    association_policy: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute the complete dataset validation and preprocessing pipeline.
 
@@ -477,12 +803,36 @@ def build_processed_manifest(
         output_frames_dir: Directory where extracted frame images should be saved.
         num_frames: Number of frames to sample if extract_frames is True.
         emotion_names: Ordered emotion label names.
+        target_sample_rate: Sample rate for extracted WAV audio.
+        audio_channels: Number of output audio channels.
+        association_policy: Optional caller declaration for the positional
+            annotation/video association. Defaults to unverified. A verified
+            declaration requires an evidence reference and is recorded as
+            caller-declared, not independently confirmed.
 
     Returns:
         Dictionary containing manifest header, split samples, and dataset statistics.
     """
     if emotion_names is None:
         emotion_names = DEFAULT_EMOTION_NAMES
+
+    normalized_association_policy = (
+        _normalize_annotation_video_association_policy(association_policy)
+    )
+    if normalized_association_policy["verification_status"] == "unverified":
+        logger.warning(
+            "Annotation/video pairing uses sorted video stems and annotation "
+            "row positions; the association is unverified."
+        )
+
+    if extract_audio and output_audio_dir is None:
+        raise ValueError("output_audio_dir is required when extract_audio is enabled.")
+    if extract_frames and output_frames_dir is None:
+        raise ValueError("output_frames_dir is required when extract_frames is enabled.")
+    if extract_frames and (
+        isinstance(num_frames, bool) or not isinstance(num_frames, int) or num_frames <= 0
+    ):
+        raise ValueError("num_frames must be a positive integer when frame extraction is enabled.")
 
     manifest_samples: Dict[str, List[Dict[str, Any]]] = {
         "train": [],
@@ -516,14 +866,23 @@ def build_processed_manifest(
 
         # 2. Retrieve sorted sample IDs
         sample_ids = get_split_sample_ids(v_dir)
+        video_paths_by_id = {
+            path.stem: path
+            for path in v_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".mp4"
+        }
 
         # 3. Match annotations with sample IDs
-        matched = match_annotations_with_media(sample_ids, annotations)
+        matched = match_annotations_with_media(
+            sample_ids,
+            annotations,
+            association_policy=association_policy,
+        )
 
         # 4. Process each sample
         for item in matched:
             sid = item["sample_id"]
-            video_file = v_dir / f"{sid}.mp4"
+            video_file = video_paths_by_id[sid]
 
             # Inspect video
             media_info = inspect_media_file(video_file)
@@ -543,22 +902,47 @@ def build_processed_manifest(
             audio_path = None
             if extract_audio and output_audio_dir:
                 audio_dest = Path(output_audio_dir) / split_key / f"{sid}.wav"
-                if not audio_dest.is_file():
-                    audio_ok = extract_audio_from_video(video_file, audio_dest)
+                if not _wav_is_usable(audio_dest, target_sample_rate, audio_channels):
+                    if audio_dest.is_file():
+                        audio_dest.unlink()
+                    audio_ok = extract_audio_from_video(
+                        video_file,
+                        audio_dest,
+                        target_sample_rate=target_sample_rate,
+                        channels=audio_channels,
+                    )
                 else:
                     audio_ok = True
                 if audio_ok:
                     audio_path = str(audio_dest)
+                else:
+                    corrupted_or_missing.append({
+                        "sample_id": sid,
+                        "split": split_key,
+                        "issue": "Audio extraction failed",
+                    })
 
             # Frame extraction if enabled
+            frame_paths: List[str] = []
             if extract_frames and output_frames_dir:
                 frame_subdir = Path(output_frames_dir) / split_key / sid
                 frame_subdir.mkdir(parents=True, exist_ok=True)
                 frames = extract_sample_frames(video_file, num_frames=num_frames)
                 for f_idx, frame in enumerate(frames):
                     frame_path = frame_subdir / f"frame_{f_idx:02d}.jpg"
-                    if not frame_path.is_file():
-                        cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    if not frame_path.is_file() or frame_path.stat().st_size == 0:
+                        written = cv2.imwrite(
+                            str(frame_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        )
+                        if not written:
+                            continue
+                    frame_paths.append(str(frame_path))
+                if not frame_paths:
+                    corrupted_or_missing.append({
+                        "sample_id": sid,
+                        "split": split_key,
+                        "issue": "Video frame extraction failed",
+                    })
 
             # Build standardized sample
             sample = build_standardized_sample(
@@ -571,6 +955,10 @@ def build_processed_manifest(
                 text=None,  # Not provided in EmoReact V1.0
                 visual_features=feat_info,
                 media_metadata=media_info,
+                video_frame_paths=frame_paths,
+            )
+            sample["annotation_video_association"] = dict(
+                item["annotation_video_association"]
             )
 
             manifest_samples[split_key].append(sample)
@@ -585,6 +973,7 @@ def build_processed_manifest(
         "dataset_root": str(dataset_root),
         "emotion_names": emotion_names,
         "valence_range": [1.0, 7.0],
+        "annotation_video_association": normalized_association_policy,
         "statistics": stats,
         "corrupted_or_missing": corrupted_or_missing,
         "samples": manifest_samples,
@@ -726,23 +1115,50 @@ def save_manifest(
     manifest: Dict[str, Any],
     output_path: Union[str, Path],
 ) -> None:
-    """Serialize the dataset manifest to a JSON file.
+    """Validate and serialize a dataset manifest to a JSON file.
+
+    Present association provenance must use the complete recorded schema.
+    Omitted provenance remains compatible with legacy manifests and is
+    materialized as unknown/unverified when loaded.
 
     Args:
         manifest: Manifest dictionary.
         output_path: Destination JSON file path.
     """
+    if not isinstance(manifest, Mapping):
+        raise TypeError("manifest must be a mapping.")
+    normalized_manifest = _normalize_manifest_association_provenance(manifest)
+    # Serialize before touching the destination so invalid/non-serializable
+    # input cannot create directories or leave a partial manifest behind.
+    serialized = json.dumps(normalized_manifest, indent=2)
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=out_path.parent,
+            prefix=f".{out_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(serialized)
+        os.replace(temporary_path, out_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
     logger.info(f"Manifest successfully saved to: {out_path}")
 
 
 def load_manifest(manifest_path: Union[str, Path]) -> Dict[str, Any]:
-    """Load a processed dataset manifest from a JSON file.
+    """Load and normalize a processed dataset manifest from JSON.
+
+    Legacy manifests without association provenance receive explicit
+    unknown/unverified policy at manifest and sample level. Present empty,
+    partial, malformed, or independently ``verified`` provenance is rejected.
 
     Args:
         manifest_path: Path to the JSON manifest.
@@ -752,13 +1168,15 @@ def load_manifest(manifest_path: Union[str, Path]) -> Dict[str, Any]:
 
     Raises:
         FileNotFoundError: If manifest file does not exist.
+        ValueError: If the JSON root or present provenance is invalid.
     """
     path = Path(manifest_path)
     if not path.is_file():
         raise FileNotFoundError(f"Manifest not found at: {path}")
 
     with open(path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
-
-    return manifest
+        loaded = json.load(f)
+    if not isinstance(loaded, Mapping):
+        raise ValueError("Manifest JSON root must be an object.")
+    return _normalize_manifest_association_provenance(loaded)
 

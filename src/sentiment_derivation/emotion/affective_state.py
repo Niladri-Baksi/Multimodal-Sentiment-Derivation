@@ -13,8 +13,9 @@ This module provides:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, Mapping, Tuple, Union
 
 import torch
 from torch import nn
@@ -99,9 +100,14 @@ class AffectiveStateEstimator(nn.Module):
         super().__init__()
         if input_dim <= 0 or hidden_dim <= 0 or affective_dim <= 0:
             raise ValueError("All dimension arguments must be positive integers.")
-        if min_valence >= max_valence:
+        if (
+            not math.isfinite(min_valence)
+            or not math.isfinite(max_valence)
+            or min_valence >= max_valence
+        ):
             raise ValueError(
-                f"min_valence ({min_valence}) must be strictly less than max_valence ({max_valence})."
+                "Valence bounds must be finite and min_valence must be strictly "
+                f"less than max_valence; got {min_valence}, {max_valence}."
             )
         if not 0.0 <= dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1); got {dropout}.")
@@ -131,8 +137,8 @@ class AffectiveStateEstimator(nn.Module):
         )
 
     @staticmethod
-    def _extract_tensor(features: FeatureInput) -> Tuple[torch.Tensor, bool]:
-        """Validate and extract feature tensor, tracking whether input was unbatched."""
+    def _extract_tensor(features: FeatureInput) -> Tuple[torch.Tensor, int]:
+        """Extract features and retain their original rank for output shaping."""
         if isinstance(features, Mapping):
             if "features" not in features:
                 raise ValueError(
@@ -148,11 +154,10 @@ class AffectiveStateEstimator(nn.Module):
         if not features.is_floating_point():
             raise TypeError("Input features must have a floating-point dtype.")
 
-        is_unbatched = False
+        input_rank = features.ndim
         if features.ndim == 1:
             # Unbatched vector [D] -> [1, 1, D]
             features = features.unsqueeze(0).unsqueeze(0)
-            is_unbatched = True
         elif features.ndim == 2:
             # Could be [B, D] or [T, D]. Standard convention: treat [B, D] as batched.
             features = features.unsqueeze(1)  # [B, 1, D]
@@ -161,7 +166,11 @@ class AffectiveStateEstimator(nn.Module):
                 f"Input features must have shape [B, T, D], [B, D], or [D]; got {tuple(features.shape)}."
             )
 
-        return features, is_unbatched
+        if features.shape[0] == 0 or features.shape[1] == 0:
+            raise ValueError("Input feature batch and sequence dimensions must be non-empty.")
+        if not bool(torch.isfinite(features).all()):
+            raise ValueError("Input features contain NaN or infinite values.")
+        return features, input_rank
 
     def forward(self, features: FeatureInput) -> AffectiveStateOutput:
         """Estimate affective state and valence from input features.
@@ -174,13 +183,20 @@ class AffectiveStateEstimator(nn.Module):
             AffectiveStateOutput containing valence, affective_state embedding,
             raw_valence, and valence_confidence.
         """
-        tensor, is_unbatched = self._extract_tensor(features)
+        tensor, input_rank = self._extract_tensor(features)
         batch_size, steps, dim = tensor.shape
 
         if dim != self.input_dim:
             raise ValueError(
                 f"Expected input feature dimension {self.input_dim}; got {dim}."
             )
+        parameter = next(self.parameters())
+        if tensor.device != parameter.device:
+            raise ValueError(
+                f"Input features are on {tensor.device}; estimator is on {parameter.device}."
+            )
+        if tensor.dtype != parameter.dtype:
+            tensor = tensor.to(dtype=parameter.dtype)
 
         # 1. Project into dense affective state embedding: [B, T, affective_dim]
         affective_emb = self.affective_encoder(tensor)
@@ -202,14 +218,20 @@ class AffectiveStateEstimator(nn.Module):
         valence_confidence = torch.clamp(
             torch.abs(valence - midpoint) / half_range, 0.0, 1.0
         )
+        if any(
+            not bool(torch.isfinite(value).all())
+            for value in (affective_emb, raw_val, valence, valence_confidence)
+        ):
+            raise FloatingPointError("AffectiveStateEstimator produced non-finite outputs.")
 
-        # If input was 2D [B, D], squeeze step dimension: [B, 1, *] -> [B, *]
-        if steps == 1 and not is_unbatched:
+        # Squeeze only dimensions implied by vector inputs. A 3D [B, 1, D]
+        # input is still a one-step sequence and retains its temporal axis.
+        if input_rank == 2:
             valence = valence.squeeze(1)
             affective_emb = affective_emb.squeeze(1)
             raw_val = raw_val.squeeze(1)
             valence_confidence = valence_confidence.squeeze(1)
-        elif is_unbatched:
+        elif input_rank == 1:
             valence = valence.squeeze(0).squeeze(0)
             affective_emb = affective_emb.squeeze(0).squeeze(0)
             raw_val = raw_val.squeeze(0).squeeze(0)
